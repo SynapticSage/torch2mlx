@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "torch2mlx"
+version = "0.1.0"
+description = "Translate PyTorch neural network models to Apple's MLX framework"
+readme = "plan.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "numpy",
+    "safetensors",
+]
+
+[project.optional-dependencies]
+mlx = ["mlx>=0.18.0"]
+torch = ["torch>=2.0.0"]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+all = ["torch2mlx[mlx,torch,dev]"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/torch2mlx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+src = ["src"]
+line-length = 100
