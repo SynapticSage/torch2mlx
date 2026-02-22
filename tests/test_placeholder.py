@@ -8,13 +8,13 @@ def test_version():
     assert torch2mlx.__version__ == "0.1.0"
 
 
-def test_registry_empty():
-    assert registry.registered_names() == []
-    assert registry.lookup("nn.Linear") is None
+def test_registry_populated():
+    assert len(registry.registered_names()) > 0
+    assert registry.lookup("Linear") is not None
 
 
-def test_op_registry_empty():
-    assert op_mapping.lookup_op("torch.cat") is None
+def test_op_registry_populated():
+    assert op_mapping.lookup_op("torch.cat") is not None
 
 
 def test_state_dict_roundtrip():

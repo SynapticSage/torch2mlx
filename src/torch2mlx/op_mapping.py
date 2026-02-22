@@ -34,3 +34,26 @@ def lookup_op(torch_op: str) -> OpMapping | None:
 def register_op(mapping: OpMapping) -> None:
     """Add an operation mapping to the registry."""
     OP_REGISTRY[mapping.torch_op] = mapping
+
+
+def _populate() -> None:
+    _ENTRIES = [
+        OpMapping("torch.cat",       "mx.concatenate", {"dim": "axis"}, ""),
+        OpMapping("torch.stack",     "mx.stack",       {"dim": "axis"}, ""),
+        OpMapping("F.softmax",       "mx.softmax",     {"dim": "axis"}, ""),
+        OpMapping("x.view",          "mx.reshape",     {},              "method -> function"),
+        OpMapping("x.permute",       "mx.transpose",   {},              "method -> function"),
+        OpMapping("x.transpose",     "mx.swapaxes",    {},              "2-arg transpose"),
+        OpMapping("x.reshape",       "mx.reshape",     {},              ""),
+        OpMapping("x.to",            "no_op",          {},              "Unified memory"),
+        OpMapping("x.contiguous",    "no_op",          {},              "No-op"),
+        OpMapping("torch.no_grad",   "no_op",          {},              "MLX doesn't track by default"),
+        OpMapping("F.relu",          "nn.relu",        {},              ""),
+        OpMapping("F.gelu",          "nn.gelu",        {},              ""),
+        OpMapping("F.silu",          "nn.silu",        {},              ""),
+    ]
+    for entry in _ENTRIES:
+        register_op(entry)
+
+
+_populate()

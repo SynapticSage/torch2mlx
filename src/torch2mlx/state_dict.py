@@ -9,9 +9,11 @@ Also handles safetensors I/O as the interchange format.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from numpy.typing import NDArray
+from safetensors.numpy import load_file, save_file
 
 
 def flatten(nested: dict[str, Any], prefix: str = "") -> dict[str, NDArray]:
@@ -36,3 +38,13 @@ def unflatten(flat: dict[str, NDArray]) -> dict[str, Any]:
             current = current.setdefault(part, {})
         current[parts[-1]] = value
     return nested
+
+
+def load_safetensors(path: str | Path) -> dict[str, NDArray]:
+    """Load tensors from a safetensors file."""
+    return load_file(str(path))
+
+
+def save_safetensors(tensors: dict[str, NDArray], path: str | Path) -> None:
+    """Save tensors to a safetensors file."""
+    save_file(tensors, str(path))

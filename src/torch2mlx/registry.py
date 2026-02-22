@@ -37,3 +37,29 @@ def register(mapping: LayerMapping) -> None:
 def registered_names() -> list[str]:
     """Return all registered torch class names."""
     return list(LAYER_REGISTRY.keys())
+
+
+def _populate() -> None:
+    _ENTRIES = [
+        LayerMapping("Linear",           "nn.Linear",           "identity",        "Identical API"),
+        LayerMapping("Embedding",        "nn.Embedding",        "identity",        "Identical"),
+        LayerMapping("LayerNorm",        "nn.LayerNorm",        "identity",        "Identical"),
+        LayerMapping("RMSNorm",          "nn.RMSNorm",          "identity",        "MLX has this natively"),
+        LayerMapping("Conv1d",           "nn.Conv1d",           "conv1d",          "Weight layout differs"),
+        LayerMapping("Conv2d",           "nn.Conv2d",           "conv2d",          "Weight layout differs"),
+        LayerMapping("ConvTranspose1d",  "nn.ConvTranspose1d",  "conv_transpose1d","Weight layout differs"),
+        LayerMapping("BatchNorm1d",      "nn.BatchNorm",        "batch_norm",      "Per-param identity"),
+        LayerMapping("BatchNorm2d",      "nn.BatchNorm",        "batch_norm",      "Per-param identity"),
+        LayerMapping("MultiheadAttention","nn.MultiHeadAttention","identity",      "Different API surface"),
+        LayerMapping("GELU",             "nn.GELU",             "identity",        "Class vs function"),
+        LayerMapping("ReLU",             "nn.ReLU",             "identity",        "Class vs function"),
+        LayerMapping("SiLU",             "nn.SiLU",             "identity",        "Class vs function"),
+        LayerMapping("Dropout",          "nn.Dropout",          "identity",        ""),
+        LayerMapping("ModuleList",       "None",                "identity",        "No MLX equivalent — needs wrapper"),
+        LayerMapping("Sequential",       "None",                "identity",        "No MLX equivalent — needs wrapper"),
+    ]
+    for entry in _ENTRIES:
+        register(entry)
+
+
+_populate()
