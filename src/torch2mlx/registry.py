@@ -48,6 +48,7 @@ def _populate() -> None:
         LayerMapping("Conv1d",           "nn.Conv1d",           "conv1d",          "Weight layout differs"),
         LayerMapping("Conv2d",           "nn.Conv2d",           "conv2d",          "Weight layout differs"),
         LayerMapping("ConvTranspose1d",  "nn.ConvTranspose1d",  "conv_transpose1d","Weight layout differs"),
+        LayerMapping("ConvTranspose2d",  "nn.ConvTranspose2d",  "conv_transpose2d","Weight layout differs"),
         LayerMapping("BatchNorm1d",      "nn.BatchNorm",        "batch_norm",      "Per-param identity"),
         LayerMapping("BatchNorm2d",      "nn.BatchNorm",        "batch_norm",      "Per-param identity"),
         LayerMapping("MultiheadAttention","nn.MultiHeadAttention","identity",      "Different API surface"),
@@ -57,6 +58,13 @@ def _populate() -> None:
         LayerMapping("Dropout",          "nn.Dropout",          "identity",        ""),
         LayerMapping("ModuleList",       "None",                "identity",        "No MLX equivalent — needs wrapper"),
         LayerMapping("Sequential",       "None",                "identity",        "No MLX equivalent — needs wrapper"),
+        LayerMapping("Tanh",             "nn.Tanh",             "identity",        "Stateless activation"),
+        LayerMapping("Sigmoid",          "nn.Sigmoid",          "identity",        "Stateless activation"),
+        LayerMapping("LeakyReLU",        "nn.LeakyReLU",        "identity",        "negative_slope param identical"),
+        LayerMapping("Softmax",          "nn.Softmax",          "identity",        "Stateless"),
+        LayerMapping("GroupNorm",        "nn.GroupNorm",         "identity",        "MLX uses dims not num_channels"),
+        LayerMapping("InstanceNorm1d",   "nn.InstanceNorm",     "identity",        "MLX default affine=False"),
+        LayerMapping("InstanceNorm2d",   "nn.InstanceNorm",     "identity",        "MLX default affine=False"),
     ]
     for entry in _ENTRIES:
         register(entry)

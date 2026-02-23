@@ -37,11 +37,17 @@ def _conv_transpose1d(arr: NDArray) -> NDArray:
     return np.transpose(arr, (1, 2, 0))
 
 
+def _conv_transpose2d(arr: NDArray) -> NDArray:
+    # [I, O, H, W] -> [O, H, W, I]
+    return np.transpose(arr, (1, 2, 3, 0))
+
+
 def _populate() -> None:
     TRANSPOSITION_RULES["identity"] = _identity
     TRANSPOSITION_RULES["conv1d"] = _conv1d
     TRANSPOSITION_RULES["conv2d"] = _conv2d
     TRANSPOSITION_RULES["conv_transpose1d"] = _conv_transpose1d
+    TRANSPOSITION_RULES["conv_transpose2d"] = _conv_transpose2d
     TRANSPOSITION_RULES["batch_norm"] = _identity  # alias
 
 

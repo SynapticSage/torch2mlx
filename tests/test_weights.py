@@ -30,6 +30,10 @@ class TestTranspositionShapes:
         arr = np.zeros((3, 16, 5))
         assert convert_weight(arr, "conv_transpose1d").shape == (16, 5, 3)
 
+    def test_conv_transpose2d(self):
+        arr = np.zeros((3, 6, 4, 4))
+        assert convert_weight(arr, "conv_transpose2d").shape == (6, 4, 4, 3)
+
     def test_batch_norm(self):
         arr = np.zeros((64,))
         assert convert_weight(arr, "batch_norm").shape == (64,)
@@ -67,6 +71,13 @@ class TestTranspositionValues:
         assert result.shape == (2, 4, 3)
         np.testing.assert_array_equal(result, np.transpose(arr, (1, 2, 0)))
 
+    def test_conv_transpose2d_values(self):
+        # [I=3, O=2, H=4, W=5] -> [O=2, H=4, W=5, I=3]
+        arr = np.arange(120.0).reshape(3, 2, 4, 5)
+        result = convert_weight(arr, "conv_transpose2d")
+        assert result.shape == (2, 4, 5, 3)
+        np.testing.assert_array_equal(result, np.transpose(arr, (1, 2, 3, 0)))
+
     def test_batch_norm_is_identity(self):
         arr = np.array([1.0, 2.0, 3.0])
         np.testing.assert_array_equal(convert_weight(arr, "batch_norm"), arr)
@@ -94,7 +105,7 @@ class TestConvertWeight:
 class TestAvailableRules:
     def test_contains_expected_rules(self):
         rules = available_rules()
-        for expected in ["identity", "conv1d", "conv2d", "conv_transpose1d", "batch_norm"]:
+        for expected in ["identity", "conv1d", "conv2d", "conv_transpose1d", "conv_transpose2d", "batch_norm"]:
             assert expected in rules, f"Missing rule: {expected!r}"
 
     def test_returns_list(self):

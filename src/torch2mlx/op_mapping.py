@@ -51,6 +51,21 @@ def _populate() -> None:
         OpMapping("F.relu",          "nn.relu",        {},              ""),
         OpMapping("F.gelu",          "nn.gelu",        {},              ""),
         OpMapping("F.silu",          "nn.silu",        {},              ""),
+        OpMapping("torch.einsum",    "mx.einsum",      {},              ""),
+        OpMapping("torch.matmul",    "mx.matmul",      {},              ""),
+        OpMapping("x.unsqueeze",     "mx.expand_dims", {"dim": "axis"}, "method -> function"),
+        OpMapping("x.squeeze",       "mx.squeeze",     {"dim": "axis"}, ""),
+        OpMapping("x.flatten",       "mx.flatten",     {},              "start_dim/end_dim differ"),
+        OpMapping("torch.split",     "mx.split",       {"dim": "axis"}, ""),
+        OpMapping("x.sum",           "mx.sum",          {"dim": "axis"}, "method -> function"),
+        OpMapping("x.mean",          "mx.mean",         {"dim": "axis"}, "method -> function"),
+        OpMapping("x.max",           "mx.max",          {"dim": "axis"}, "method -> function"),
+        OpMapping("x.min",           "mx.min",          {"dim": "axis"}, "method -> function"),
+        OpMapping("F.cross_entropy", "nn.losses.cross_entropy", {}, "No reduction param in MLX"),
+        OpMapping("F.mse_loss",      "nn.losses.mse_loss",      {}, "No reduction param in MLX"),
+        OpMapping("torch.zeros",     "mx.zeros",          {"dtype": "dtype"}, "dtype values differ across frameworks"),
+        OpMapping("torch.ones",      "mx.ones",           {"dtype": "dtype"}, "dtype values differ across frameworks"),
+        OpMapping("torch.randn",     "mx.random.normal",  {},                 "Different seeding semantics"),
     ]
     for entry in _ENTRIES:
         register_op(entry)

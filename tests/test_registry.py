@@ -18,6 +18,7 @@ EXPECTED_LAYERS = [
     ("Conv1d",            "nn.Conv1d",             "conv1d"),
     ("Conv2d",            "nn.Conv2d",             "conv2d"),
     ("ConvTranspose1d",   "nn.ConvTranspose1d",    "conv_transpose1d"),
+    ("ConvTranspose2d",   "nn.ConvTranspose2d",    "conv_transpose2d"),
     ("BatchNorm1d",       "nn.BatchNorm",          "batch_norm"),
     ("BatchNorm2d",       "nn.BatchNorm",          "batch_norm"),
     ("MultiheadAttention","nn.MultiHeadAttention", "identity"),
@@ -27,6 +28,13 @@ EXPECTED_LAYERS = [
     ("Dropout",           "nn.Dropout",            "identity"),
     ("ModuleList",        "None",                  "identity"),
     ("Sequential",        "None",                  "identity"),
+    ("Tanh",              "nn.Tanh",               "identity"),
+    ("Sigmoid",           "nn.Sigmoid",            "identity"),
+    ("LeakyReLU",         "nn.LeakyReLU",          "identity"),
+    ("Softmax",           "nn.Softmax",            "identity"),
+    ("GroupNorm",         "nn.GroupNorm",           "identity"),
+    ("InstanceNorm1d",    "nn.InstanceNorm",        "identity"),
+    ("InstanceNorm2d",    "nn.InstanceNorm",        "identity"),
 ]
 
 EXPECTED_OPS = [
@@ -43,6 +51,21 @@ EXPECTED_OPS = [
     ("F.relu",        "nn.relu",        {}),
     ("F.gelu",        "nn.gelu",        {}),
     ("F.silu",        "nn.silu",        {}),
+    ("torch.einsum",  "mx.einsum",     {}),
+    ("torch.matmul",  "mx.matmul",     {}),
+    ("x.unsqueeze",   "mx.expand_dims", {"dim": "axis"}),
+    ("x.squeeze",     "mx.squeeze",    {"dim": "axis"}),
+    ("x.flatten",     "mx.flatten",    {}),
+    ("torch.split",   "mx.split",      {"dim": "axis"}),
+    ("x.sum",         "mx.sum",        {"dim": "axis"}),
+    ("x.mean",        "mx.mean",       {"dim": "axis"}),
+    ("x.max",         "mx.max",        {"dim": "axis"}),
+    ("x.min",         "mx.min",        {"dim": "axis"}),
+    ("F.cross_entropy", "nn.losses.cross_entropy", {}),
+    ("F.mse_loss",      "nn.losses.mse_loss",      {}),
+    ("torch.zeros",   "mx.zeros",         {"dtype": "dtype"}),
+    ("torch.ones",    "mx.ones",          {"dtype": "dtype"}),
+    ("torch.randn",   "mx.random.normal", {}),
 ]
 
 # ── LAYER_REGISTRY tests ─────────────────────────────────────────────────────
@@ -114,3 +137,57 @@ def test_no_op_mappings_present():
     no_ops = [op for op, mlx, _ in EXPECTED_OPS if mlx == "no_op"]
     for torch_op in no_ops:
         assert op_mapping.lookup_op(torch_op) is not None
+
+
+# ── MLX existence validation ────────────────────────────────────────────────
+# These tests verify that every MLX symbol referenced in the registries
+# actually exists in the installed MLX package.
+
+mlx_core = pytest.importorskip("mlx.core", reason="mlx not installed")
+mlx_nn = pytest.importorskip("mlx.nn", reason="mlx not installed")
+
+SKIP_LAYER_NAMES = {"None"}
+SKIP_OP_NAMES = {"no_op"}
+
+
+def _resolve_mlx_attr(dotted_name: str):
+    """Resolve 'nn.Linear' -> mlx.nn.Linear, 'mx.sum' -> mlx.core.sum, etc."""
+    parts = dotted_name.split(".")
+    if parts[0] == "nn":
+        obj = mlx_nn
+        parts = parts[1:]
+    elif parts[0] == "mx":
+        obj = mlx_core
+        parts = parts[1:]
+    else:
+        raise ValueError(f"Unknown prefix in {dotted_name!r}")
+    for part in parts:
+        obj = getattr(obj, part)
+    return obj
+
+
+_LAYER_NAMES_TO_CHECK = [
+    m.mlx_name
+    for m in LAYER_REGISTRY.values()
+    if m.mlx_name not in SKIP_LAYER_NAMES
+]
+
+_OP_NAMES_TO_CHECK = [
+    m.mlx_op
+    for m in OP_REGISTRY.values()
+    if m.mlx_op not in SKIP_OP_NAMES
+]
+
+
+@pytest.mark.parametrize("mlx_name", sorted(set(_LAYER_NAMES_TO_CHECK)))
+def test_mlx_layer_exists(mlx_name):
+    """Every non-None mlx_name in LAYER_REGISTRY resolves to a real MLX symbol."""
+    obj = _resolve_mlx_attr(mlx_name)
+    assert callable(obj), f"{mlx_name} exists but is not callable"
+
+
+@pytest.mark.parametrize("mlx_op", sorted(set(_OP_NAMES_TO_CHECK)))
+def test_mlx_op_exists(mlx_op):
+    """Every non-no_op mlx_op in OP_REGISTRY resolves to a real MLX symbol."""
+    obj = _resolve_mlx_attr(mlx_op)
+    assert callable(obj), f"{mlx_op} exists but is not callable"
