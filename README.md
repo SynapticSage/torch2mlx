@@ -1,6 +1,10 @@
-# torch2mlx
+<p align="center">
+  <img src=".assets/logo.png" alt="torch2mlx" width="620">
+</p>
 
-Translate PyTorch neural network models to Apple's MLX framework.
+<p align="center">
+  Translate PyTorch neural network models to Apple's MLX framework.
+</p>
 
 ## Why
 
@@ -82,4 +86,4 @@ ruff format src/ tests/      # Format
 
 ## License
 
-MIT
+Apache 2.0
