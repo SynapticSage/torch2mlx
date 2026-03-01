@@ -22,8 +22,20 @@ class OpMapping:
     notes: str = ""
 
 
+@dataclass(frozen=True)
+class DtypeMapping:
+    """Single torch dtype -> MLX dtype mapping."""
+
+    torch_dtype: str
+    mlx_dtype: str
+    notes: str = ""
+
+
 # Populated by registry-agent
 OP_REGISTRY: dict[str, OpMapping] = {}
+
+# Dtype registry: torch dtype string -> MLX dtype string
+DTYPE_REGISTRY: dict[str, DtypeMapping] = {}
 
 
 def lookup_op(torch_op: str) -> OpMapping | None:
@@ -31,9 +43,20 @@ def lookup_op(torch_op: str) -> OpMapping | None:
     return OP_REGISTRY.get(torch_op)
 
 
+def get_dtype_mapping(torch_dtype: str) -> str | None:
+    """Return the MLX dtype string for a torch dtype, or None if unmapped."""
+    mapping = DTYPE_REGISTRY.get(torch_dtype)
+    return mapping.mlx_dtype if mapping is not None else None
+
+
 def register_op(mapping: OpMapping) -> None:
     """Add an operation mapping to the registry."""
     OP_REGISTRY[mapping.torch_op] = mapping
+
+
+def register_dtype(mapping: DtypeMapping) -> None:
+    """Add a dtype mapping to the registry."""
+    DTYPE_REGISTRY[mapping.torch_dtype] = mapping
 
 
 def _populate() -> None:
@@ -74,3 +97,25 @@ def _populate() -> None:
 
 
 _populate()
+
+
+def _populate_dtypes() -> None:
+    _ENTRIES = [
+        DtypeMapping("torch.float16",   "mx.float16",  ""),
+        DtypeMapping("torch.float32",   "mx.float32",  ""),
+        DtypeMapping("torch.bfloat16",  "mx.bfloat16", ""),
+        DtypeMapping("torch.int8",      "mx.int8",     ""),
+        DtypeMapping("torch.int16",     "mx.int16",    ""),
+        DtypeMapping("torch.int32",     "mx.int32",    ""),
+        DtypeMapping("torch.int64",     "mx.int64",    ""),
+        DtypeMapping("torch.uint8",     "mx.uint8",    ""),
+        DtypeMapping("torch.bool",      "mx.bool_",    "MLX uses trailing underscore"),
+        DtypeMapping("torch.float64",   "mx.float32",  "MLX lacks float64; downcast"),
+        DtypeMapping("torch.complex64", "unsupported",  "MLX lacks complex dtypes"),
+        DtypeMapping("torch.complex128","unsupported",  "MLX lacks complex dtypes"),
+    ]
+    for entry in _ENTRIES:
+        register_dtype(entry)
+
+
+_populate_dtypes()

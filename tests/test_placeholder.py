@@ -1,7 +1,7 @@
 """Placeholder tests to verify scaffolding works."""
 
 import torch2mlx
-from torch2mlx import registry, op_mapping, state_dict, weight_converter, analyzer
+from torch2mlx import registry, op_mapping, state_dict, analyzer
 
 
 def test_version():

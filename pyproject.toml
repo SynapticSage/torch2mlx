@@ -9,10 +9,31 @@ description = "Translate PyTorch neural network models to Apple's MLX framework"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
+authors = [
+    {name = "Ryan Young", email = "git@ryanyoung.io"},
+]
+keywords = ["pytorch", "mlx", "apple-silicon", "model-conversion", "deep-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "numpy",
     "safetensors",
 ]
+
+[project.urls]
+Homepage = "https://github.com/SynapticSage/torch2mlx"
+Repository = "https://github.com/SynapticSage/torch2mlx"
+Issues = "https://github.com/SynapticSage/torch2mlx/issues"
 
 [project.optional-dependencies]
 mlx = ["mlx>=0.18.0"]

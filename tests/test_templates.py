@@ -9,11 +9,11 @@ import pytest
 
 mlx = pytest.importorskip("mlx")
 
-import mlx.core as mx
-from torch2mlx.templates.mlp import MLP
-from torch2mlx.templates.transformer import TransformerBlock
-from torch2mlx.templates.cnn import ConvBlock, ConvStack
-from torch2mlx.templates.pooling import AdaptiveAvgPool2d
+import mlx.core as mx  # noqa: E402
+from torch2mlx.templates.mlp import MLP  # noqa: E402
+from torch2mlx.templates.transformer import TransformerBlock  # noqa: E402
+from torch2mlx.templates.cnn import ConvBlock, ConvStack  # noqa: E402
+from torch2mlx.templates.pooling import AdaptiveAvgPool2d  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

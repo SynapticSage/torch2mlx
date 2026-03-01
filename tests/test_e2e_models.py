@@ -13,7 +13,7 @@ from torch2mlx.converter import convert, load_converted
 from torch2mlx.state_dict import save_safetensors
 
 try:
-    import torch
+    import torch  # noqa: F401
     import torch.nn as nn
 
     HAS_TORCH = True

@@ -1,138 +1,127 @@
 # torch2mlx Support Matrix
 
-> Living reference of every torch operation's support status.
-> Generated from source: `registry.py`, `op_mapping.py`, `weight_converter.py`, `analyzer.py`.
+> Reference of supported torch operations and their MLX equivalents.
 
-## Layer Mappings (`LAYER_REGISTRY`)
+## Layer Mappings
 
-37 torch.nn module classes with automatic conversion support.
+37 `torch.nn` module classes with automatic conversion support.
 
-| Torch Layer | MLX Equivalent | Weight Rule | Registry Test | Weight Test | E2E Test | Template |
-|---|---|---|---|---|---|---|
-| `nn.Linear` | `nn.Linear` | identity | test_registry.py | test_weights.py | test_converter.py (`test_end_to_end_linear`) | MLP |
-| `nn.Embedding` | `nn.Embedding` | identity | test_registry.py | test_weights.py | — | — |
-| `nn.LayerNorm` | `nn.LayerNorm` | identity | test_registry.py | test_weights.py | — | TransformerBlock |
-| `nn.RMSNorm` | `nn.RMSNorm` | identity | test_registry.py | test_weights.py | — | — |
-| `nn.Conv1d` | `nn.Conv1d` | conv1d | test_registry.py | test_weights.py | test_converter.py (`test_end_to_end_conv1d`) | ConvBlock, ConvStack |
-| `nn.Conv2d` | `nn.Conv2d` | conv2d | test_registry.py | test_weights.py | test_converter.py (shape test) | ConvBlock, ConvStack |
-| `nn.ConvTranspose1d` | `nn.ConvTranspose1d` | conv_transpose1d | test_registry.py | test_weights.py | — | — |
-| `nn.ConvTranspose2d` | `nn.ConvTranspose2d` | conv_transpose2d | test_registry.py | test_weights.py | — | — |
-| `nn.BatchNorm1d` | `nn.BatchNorm` | batch_norm | test_registry.py | test_weights.py | — | — |
-| `nn.BatchNorm2d` | `nn.BatchNorm` | batch_norm | test_registry.py | test_weights.py | — | — |
-| `nn.MultiheadAttention` | `nn.MultiHeadAttention` | identity | test_registry.py | test_weights.py | — | TransformerBlock |
-| `nn.GELU` | `nn.GELU` | identity | test_registry.py | — | — | MLP, TransformerBlock |
-| `nn.ReLU` | `nn.ReLU` | identity | test_registry.py | — | — | MLP |
-| `nn.SiLU` | `nn.SiLU` | identity | test_registry.py | — | — | MLP |
-| `nn.Dropout` | `nn.Dropout` | identity | test_registry.py | — | — | MLP, TransformerBlock |
-| `nn.ModuleList` | None (wrapper) | identity | test_registry.py | — | — | — |
-| `nn.Sequential` | None (wrapper) | identity | test_registry.py | — | — | — |
-| `nn.Tanh` | `nn.Tanh` | identity | test_registry.py | — | — | — |
-| `nn.Sigmoid` | `nn.Sigmoid` | identity | test_registry.py | — | — | — |
-| `nn.LeakyReLU` | `nn.LeakyReLU` | identity | test_registry.py | — | — | — |
-| `nn.Softmax` | `nn.Softmax` | identity | test_registry.py | — | — | — |
-| `nn.GroupNorm` | `nn.GroupNorm` | identity | test_registry.py | — | — | — |
-| `nn.InstanceNorm1d` | `nn.InstanceNorm` | identity | test_registry.py | — | — | — |
-| `nn.InstanceNorm2d` | `nn.InstanceNorm` | identity | test_registry.py | — | — | — |
-| `nn.MaxPool1d` | `nn.MaxPool1d` | identity | test_registry.py | — | — | — |
-| `nn.MaxPool2d` | `nn.MaxPool2d` | identity | test_registry.py | — | — | — |
-| `nn.MaxPool3d` | `nn.MaxPool3d` | identity | test_registry.py | — | — | — |
-| `nn.AvgPool1d` | `nn.AvgPool1d` | identity | test_registry.py | — | — | — |
-| `nn.AvgPool2d` | `nn.AvgPool2d` | identity | test_registry.py | — | — | — |
-| `nn.AvgPool3d` | `nn.AvgPool3d` | identity | test_registry.py | — | — | — |
-| `nn.AdaptiveAvgPool2d` | None (template) | identity | test_registry.py | — | — | AdaptiveAvgPool2d |
-| `nn.TransformerEncoder` | None (decompose) | identity | test_registry.py | — | — | — |
-| `nn.TransformerDecoder` | None (decompose) | identity | test_registry.py | — | — | — |
-| `nn.Flatten` | None (stateless) | identity | test_registry.py | — | test_e2e_models.py | — |
-| `nn.TransformerEncoderLayer` | None (decompose) | identity | test_registry.py | — | test_e2e_models.py | — |
-| `nn.TransformerDecoderLayer` | None (decompose) | identity | test_registry.py | — | — | — |
-| `NonDynamicallyQuantizableLinear` | `nn.Linear` | identity | test_registry.py | — | test_e2e_models.py | — |
-
-### Notable Unsupported Layers
-
-| Category | Torch Layers | Difficulty | Blockers / Notes |
+| Torch Layer | MLX Equivalent | Weight Rule | Template |
 |---|---|---|---|
-| ~~Pooling~~ | ~~`MaxPool1d/2d/3d`, `AvgPool1d/2d/3d`, `AdaptiveAvgPool2d`~~ | ~~Hard~~ | Now supported — see layer table above. Native MLX pooling + custom AdaptiveAvgPool2d template. |
-| Recurrent | `LSTM`, `GRU`, `RNN` | Out of scope | Stateful + sequential execution. MLX has no built-in RNN. Would need hand-written scan loop + hidden state management. |
-| Conv variants | `Conv3d`, `ConvTranspose3d` | Medium | MLX lacks `Conv3d` entirely. `ConvTranspose2d` now supported — see layer table above. |
-| ~~Normalization~~ | ~~`GroupNorm`, `InstanceNorm1d/2d`~~ | ~~Easy~~ | Now supported — see layer table above |
-| ~~Activations~~ | ~~`Tanh`, `Sigmoid`, `LeakyReLU`, `Softmax`~~ | ~~Easy~~ | Now supported — see layer table above |
-| ~~Attention~~ | ~~`TransformerEncoder`, `TransformerDecoder`~~ | ~~Medium~~ | Now supported — decompose into registered children automatically. |
+| `nn.Linear` | `nn.Linear` | identity | MLP |
+| `nn.Embedding` | `nn.Embedding` | identity | — |
+| `nn.LayerNorm` | `nn.LayerNorm` | identity | TransformerBlock |
+| `nn.RMSNorm` | `nn.RMSNorm` | identity | — |
+| `nn.Conv1d` | `nn.Conv1d` | conv1d | ConvBlock, ConvStack |
+| `nn.Conv2d` | `nn.Conv2d` | conv2d | ConvBlock, ConvStack |
+| `nn.ConvTranspose1d` | `nn.ConvTranspose1d` | conv_transpose1d | — |
+| `nn.ConvTranspose2d` | `nn.ConvTranspose2d` | conv_transpose2d | — |
+| `nn.BatchNorm1d` | `nn.BatchNorm` | batch_norm | — |
+| `nn.BatchNorm2d` | `nn.BatchNorm` | batch_norm | — |
+| `nn.MultiheadAttention` | `nn.MultiHeadAttention` | identity | TransformerBlock |
+| `nn.GELU` | `nn.GELU` | identity | MLP, TransformerBlock |
+| `nn.ReLU` | `nn.ReLU` | identity | MLP |
+| `nn.SiLU` | `nn.SiLU` | identity | MLP |
+| `nn.Tanh` | `nn.Tanh` | identity | — |
+| `nn.Sigmoid` | `nn.Sigmoid` | identity | — |
+| `nn.LeakyReLU` | `nn.LeakyReLU` | identity | — |
+| `nn.Softmax` | `nn.Softmax` | identity | — |
+| `nn.Dropout` | `nn.Dropout` | identity | MLP, TransformerBlock |
+| `nn.GroupNorm` | `nn.GroupNorm` | identity | — |
+| `nn.InstanceNorm1d` | `nn.InstanceNorm` | identity | — |
+| `nn.InstanceNorm2d` | `nn.InstanceNorm` | identity | — |
+| `nn.MaxPool1d` | `nn.MaxPool1d` | identity | — |
+| `nn.MaxPool2d` | `nn.MaxPool2d` | identity | — |
+| `nn.MaxPool3d` | `nn.MaxPool3d` | identity | — |
+| `nn.AvgPool1d` | `nn.AvgPool1d` | identity | — |
+| `nn.AvgPool2d` | `nn.AvgPool2d` | identity | — |
+| `nn.AvgPool3d` | `nn.AvgPool3d` | identity | — |
+| `nn.AdaptiveAvgPool2d` | Custom template | identity | AdaptiveAvgPool2d |
+| `nn.TransformerEncoder` | Decomposed into children | identity | — |
+| `nn.TransformerDecoder` | Decomposed into children | identity | — |
+| `nn.TransformerEncoderLayer` | Decomposed into children | identity | — |
+| `nn.TransformerDecoderLayer` | Decomposed into children | identity | — |
+| `nn.Flatten` | Stateless (no weights) | identity | — |
+| `nn.ModuleList` | Container (no weights) | identity | — |
+| `nn.Sequential` | Container (no weights) | identity | — |
+| `NonDynamicallyQuantizableLinear` | `nn.Linear` | identity | — |
 
-## Op Mappings (`OP_REGISTRY`)
+### Unsupported Layers
+
+| Category | Torch Layers | Notes |
+|---|---|---|
+| Recurrent | `LSTM`, `GRU`, `RNN` | Stateful + sequential execution. MLX has no built-in RNN. Out of scope. |
+| 3D convolution | `Conv3d`, `ConvTranspose3d` | MLX lacks `Conv3d` entirely. |
+
+## Op Mappings
 
 30 functional/tensor operations with automatic mapping.
 
-| Torch Op | MLX Equivalent | Param Renames | Registry Test | Used in Templates |
-|---|---|---|---|---|
-| `torch.cat` | `mx.concatenate` | `dim` → `axis` | test_registry.py | — |
-| `torch.stack` | `mx.stack` | `dim` → `axis` | test_registry.py | — |
-| `F.softmax` | `mx.softmax` | `dim` → `axis` | test_registry.py | TransformerBlock |
-| `x.view` | `mx.reshape` | — | test_registry.py | — |
-| `x.permute` | `mx.transpose` | — | test_registry.py | — |
-| `x.transpose` | `mx.swapaxes` | — | test_registry.py | TransformerBlock |
-| `x.reshape` | `mx.reshape` | — | test_registry.py | — |
-| `x.to` | no_op | — | test_registry.py | — |
-| `x.contiguous` | no_op | — | test_registry.py | — |
-| `torch.no_grad` | no_op | — | test_registry.py | — |
-| `F.relu` | `nn.relu` | — | test_registry.py | — |
-| `F.gelu` | `nn.gelu` | — | test_registry.py | — |
-| `F.silu` | `nn.silu` | — | test_registry.py | — |
-| `torch.einsum` | `mx.einsum` | — | test_registry.py | — |
-| `torch.matmul` | `mx.matmul` | — | test_registry.py | — |
-| `x.unsqueeze` | `mx.expand_dims` | `dim` → `axis` | test_registry.py | — |
-| `x.squeeze` | `mx.squeeze` | `dim` → `axis` | test_registry.py | — |
-| `x.flatten` | `mx.flatten` | — | test_registry.py | — |
-| `torch.split` | `mx.split` | `dim` → `axis` | test_registry.py | — |
-| `x.sum` | `mx.sum` | `dim` → `axis` | test_registry.py | — |
-| `x.mean` | `mx.mean` | `dim` → `axis` | test_registry.py | — |
-| `x.max` | `mx.max` | `dim` → `axis` | test_registry.py | — |
-| `x.min` | `mx.min` | `dim` → `axis` | test_registry.py | — |
-| `F.cross_entropy` | `nn.losses.cross_entropy` | — | test_registry.py | — |
-| `F.mse_loss` | `nn.losses.mse_loss` | — | test_registry.py | — |
-| `torch.zeros` | `mx.zeros` | `dtype` → `dtype` | test_registry.py | — |
-| `torch.ones` | `mx.ones` | `dtype` → `dtype` | test_registry.py | — |
-| `torch.randn` | `mx.random.normal` | — | test_registry.py | — |
-| `x.chunk` | `mx.split` | `dim` → `axis` | test_registry.py | — |
-| `torch.chunk` | `mx.split` | `dim` → `axis` | test_registry.py | — |
+| Torch Op | MLX Equivalent | Param Renames |
+|---|---|---|
+| `torch.cat` | `mx.concatenate` | `dim` → `axis` |
+| `torch.stack` | `mx.stack` | `dim` → `axis` |
+| `torch.split` | `mx.split` | `dim` → `axis` |
+| `torch.chunk` | `mx.split` | `dim` → `axis` |
+| `x.chunk` | `mx.split` | `dim` → `axis` |
+| `torch.einsum` | `mx.einsum` | — |
+| `torch.matmul` | `mx.matmul` | — |
+| `F.softmax` | `mx.softmax` | `dim` → `axis` |
+| `F.relu` | `nn.relu` | — |
+| `F.gelu` | `nn.gelu` | — |
+| `F.silu` | `nn.silu` | — |
+| `F.cross_entropy` | `nn.losses.cross_entropy` | — |
+| `F.mse_loss` | `nn.losses.mse_loss` | — |
+| `x.view` | `mx.reshape` | — |
+| `x.reshape` | `mx.reshape` | — |
+| `x.permute` | `mx.transpose` | — |
+| `x.transpose` | `mx.swapaxes` | — |
+| `x.unsqueeze` | `mx.expand_dims` | `dim` → `axis` |
+| `x.squeeze` | `mx.squeeze` | `dim` → `axis` |
+| `x.flatten` | `mx.flatten` | — |
+| `x.sum` | `mx.sum` | `dim` → `axis` |
+| `x.mean` | `mx.mean` | `dim` → `axis` |
+| `x.max` | `mx.max` | `dim` → `axis` |
+| `x.min` | `mx.min` | `dim` → `axis` |
+| `x.to` | no-op | — |
+| `x.contiguous` | no-op | — |
+| `torch.no_grad` | no-op | — |
+| `torch.zeros` | `mx.zeros` | `dtype` → `dtype` |
+| `torch.ones` | `mx.ones` | `dtype` → `dtype` |
+| `torch.randn` | `mx.random.normal` | — |
 
-### Notable Unsupported Ops
+### Unsupported Ops
 
-| Category | Torch Ops | Difficulty | Blockers / Notes |
-|---|---|---|---|
-| ~~Einsum~~ | ~~`torch.einsum`~~ | ~~Easy~~ | Now supported — see op table above |
-| ~~Matmul~~ | ~~`torch.matmul`, `@` operator~~ | ~~Easy~~ | Now supported — see op table above |
-| ~~Tensor methods~~ | ~~`.chunk`~~ | ~~Easy~~ | Now supported — see op table above. |
-| ~~Reduction~~ | ~~`.sum`, `.mean`, `.max`, `.min`~~ | ~~Easy~~ | Now supported — see op table above |
-| ~~Loss functions~~ | ~~`F.cross_entropy`, `F.mse_loss`~~ | ~~Medium~~ | Now supported — see op table above. Note: no `reduction` param in MLX, different label format. |
-| ~~Creation~~ | ~~`torch.zeros`, `torch.ones`, `torch.randn`~~ | ~~Medium~~ | Now supported — see op table above. Note: dtype mapping needed, `torch.randn` has different seeding. |
-| In-place ops | `.add_`, `.mul_`, `.zero_`, `x[i] = v` | Hard | MLX arrays are immutable. No direct equivalent. Must refactor to functional style (`x = x + y`). Analyzer flags these as blockers. |
-| Autograd | `torch.autograd.Function`, `.backward()` | Out of scope | MLX uses `mx.grad()` with a fundamentally different API. Custom autograd functions need full rewrite. |
+| Category | Torch Ops | Notes |
+|---|---|---|
+| In-place mutation | `.add_`, `.mul_`, `.zero_`, `x[i] = v` | MLX arrays are immutable. Must refactor to functional style. The analyzer flags these as blockers. |
+| Autograd | `torch.autograd.Function`, `.backward()` | MLX uses `mx.grad()` with a different API. Out of scope. |
 
-## Weight Transposition Rules (`TRANSPOSITION_RULES`)
+## Weight Transposition Rules
 
-6 rules mapping PyTorch weight layouts to MLX conventions. All operate on numpy arrays.
+6 rules mapping PyTorch weight layouts to MLX conventions. All operate on numpy arrays (backend-agnostic).
 
-| Rule Key | Transform | Shape Example | Shape Test | Value Test | E2E Test |
-|---|---|---|---|---|---|
-| `identity` | passthrough | `[O, I]` → `[O, I]` | `TestTranspositionShapes.test_identity` | `TestTranspositionValues.test_identity_values` | `test_end_to_end_linear` |
-| `conv1d` | `np.swapaxes(1, 2)` | `[O, I, K]` → `[O, K, I]` | `TestTranspositionShapes.test_conv1d` | `TestTranspositionValues.test_conv1d_values` | `test_end_to_end_conv1d` |
-| `conv2d` | `np.moveaxis(1, -1)` | `[O, I, H, W]` → `[O, H, W, I]` | `TestTranspositionShapes.test_conv2d` | `TestTranspositionValues.test_conv2d_values` | `test_convert_state_dict_applies_conv2d_transposition` |
-| `conv_transpose1d` | `np.transpose(1, 2, 0)` | `[I, O, K]` → `[O, K, I]` | `TestTranspositionShapes.test_conv_transpose1d` | `TestTranspositionValues.test_conv_transpose1d_values` | — |
-| `conv_transpose2d` | `np.transpose(1, 2, 3, 0)` | `[I, O, H, W]` → `[O, H, W, I]` | `TestTranspositionShapes.test_conv_transpose2d` | `TestTranspositionValues.test_conv_transpose2d_values` | — |
-| `batch_norm` | alias for identity | `[C]` → `[C]` | `TestTranspositionShapes.test_batch_norm` | `TestTranspositionValues.test_batch_norm_is_identity` | — |
+| Rule Key | Transform | Shape Example |
+|---|---|---|
+| `identity` | passthrough | `[O, I]` → `[O, I]` |
+| `conv1d` | `np.swapaxes(1, 2)` | `[O, I, K]` → `[O, K, I]` |
+| `conv2d` | `np.moveaxis(1, -1)` | `[O, I, H, W]` → `[O, H, W, I]` |
+| `conv_transpose1d` | `np.transpose(1, 2, 0)` | `[I, O, K]` → `[O, K, I]` |
+| `conv_transpose2d` | `np.transpose(1, 2, 3, 0)` | `[I, O, H, W]` → `[O, H, W, I]` |
+| `batch_norm` | passthrough (alias for identity) | `[C]` → `[C]` |
 
-## Blocker Detection (`analyzer.py`)
+## Blocker Detection
 
 Patterns scanned in `forward()` source code to flag non-convertible constructs.
 
-| Pattern | Detection Method | Tested |
-|---|---|---|
-| `.copy_(` | String match in `inspect.getsource(forward)` | `TestBlockerDetection.test_copy_inplace_blocker` |
-| `torch.autograd.Function` | String match | — (no dedicated test) |
-| `.item()` | String match | `TestBlockerDetection.test_item_blocker` |
-| `register_forward_hook` | String match | — (no dedicated test) |
-| `register_backward_hook` | String match | — (no dedicated test) |
-| `+=` (in-place add heuristic) | Line-by-line scan, excludes counters | — (no dedicated test) |
+| Pattern | Detection Method |
+|---|---|
+| `.copy_(` | String match in `inspect.getsource(forward)` |
+| `torch.autograd.Function` | String match |
+| `.item()` | String match |
+| `register_forward_hook` | String match |
+| `register_backward_hook` | String match |
+| `+=` (in-place add) | Line-by-line scan, excludes counters |
 
 ## Summary
 
@@ -142,19 +131,5 @@ Patterns scanned in `forward()` source code to flag non-convertible constructs.
 | Supported op mappings | 30 |
 | Weight transposition rules | 6 |
 | Blocker patterns detected | 6 |
-| Total tests | 215 |
 | Templates | 5 (MLP, TransformerBlock, ConvBlock, ConvStack, AdaptiveAvgPool2d) |
-
-### Test Coverage by Module
-
-| Module | Test File | Tests |
-|---|---|---|
-| `registry.py` | test_registry.py | 24 parametrized layer + 20 MLX existence + 4 unit |
-| `op_mapping.py` | test_registry.py | 28 parametrized op + 24 MLX existence + 3 unit |
-| `weight_converter.py` | test_weights.py | 6 shape + 6 value + 2 dispatch |
-| `state_dict.py` | test_weights.py | 3 safetensors + 5 flatten/unflatten |
-| `analyzer.py` | test_analyzer.py | 5 report unit + 5 analyze + 4 blocker |
-| `converter.py` | test_converter.py | 6 state_dict + 4 module_map + 2 roundtrip + 4 e2e |
-| `templates/` | test_templates.py | 5 MLP + 4 transformer + 3 conv_block + 3 conv_stack + 3 adaptive_pool |
-| `__main__.py` | test_e2e_models.py | 4 CLI smoke tests |
-| E2E models | test_e2e_models.py | 2 ResNet + 2 Transformer + 1 export API |
+| Total tests | 217 |
