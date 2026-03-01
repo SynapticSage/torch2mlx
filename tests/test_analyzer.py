@@ -90,6 +90,40 @@ class TestAnalyzeSimpleModel:
         report = analyze(model)
         assert report.coverage < 1.0
 
+    def test_fully_composed_custom_module_counts_as_mapped(self):
+        """Custom module whose children are all registered counts as mapped."""
+        class MyBlock(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.conv = nn.Conv2d(3, 16, 3)
+                self.bn = nn.BatchNorm2d(16)
+                self.relu = nn.ReLU()
+            def forward(self, x):
+                return self.relu(self.bn(self.conv(x)))
+
+        model = nn.Sequential(MyBlock(), nn.Linear(16, 10))
+        report = analyze(model)
+        assert report.coverage == 1.0
+        assert "MyBlock" not in report.unmapped_layers
+
+    def test_partially_composed_module_stays_unmapped(self):
+        """Custom module with an unmapped leaf child stays unmapped."""
+        class UnknownOp(nn.Module):
+            def forward(self, x):
+                return x
+
+        class MyBlock(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = nn.Linear(4, 4)
+                self.custom = UnknownOp()
+            def forward(self, x):
+                return self.custom(self.linear(x))
+
+        report = analyze(MyBlock())
+        assert "MyBlock" in report.unmapped_layers or "UnknownOp" in report.unmapped_layers
+        assert report.coverage < 1.0
+
 
 class TestBlockerDetection:
     def test_copy_inplace_blocker(self):

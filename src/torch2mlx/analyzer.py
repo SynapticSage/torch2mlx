@@ -87,6 +87,22 @@ def detect_blockers(module: object) -> list[str]:
     return blockers
 
 
+def _is_fully_composed(module: object) -> bool:
+    """Check if an unregistered module is fully composed of convertible children.
+
+    Returns True when the module has children and every direct child is either
+    in the registry or is itself fully composed.  Leaf modules (no children)
+    return False — they need an explicit registry entry.
+    """
+    children = list(module.children())
+    if not children:
+        return False
+    return all(
+        lookup(type(c).__name__) is not None or _is_fully_composed(c)
+        for c in children
+    )
+
+
 def analyze(module: object) -> PortabilityReport:
     """Analyze a torch.nn.Module for MLX portability.
 
@@ -108,7 +124,7 @@ def analyze(module: object) -> PortabilityReport:
             continue  # root module — skip
         class_name = type(child).__name__
         report.total_layers += 1
-        if lookup(class_name) is not None:
+        if lookup(class_name) is not None or _is_fully_composed(child):
             report.mapped_layers += 1
         else:
             if class_name not in report.unmapped_layers:
