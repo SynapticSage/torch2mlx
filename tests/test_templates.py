@@ -13,6 +13,7 @@ import mlx.core as mx
 from torch2mlx.templates.mlp import MLP
 from torch2mlx.templates.transformer import TransformerBlock
 from torch2mlx.templates.cnn import ConvBlock, ConvStack
+from torch2mlx.templates.pooling import AdaptiveAvgPool2d
 
 
 # ---------------------------------------------------------------------------
@@ -156,3 +157,36 @@ def test_conv_stack_per_layer_kernel_sizes():
     # With no padding: 64 ->(k=3) 62 ->(k=5) 58
     assert out.shape[0] == 1
     assert out.shape[2] == 32
+
+
+# ---------------------------------------------------------------------------
+# AdaptiveAvgPool2d
+# ---------------------------------------------------------------------------
+
+
+def test_adaptive_avg_pool2d_global():
+    """output_size=(1,1) is global average pooling (used in ResNet)."""
+    model = AdaptiveAvgPool2d(output_size=(1, 1))
+    # channels-last: (batch, H, W, C)
+    x = mx.random.normal((2, 8, 8, 16))
+    out = model(x)
+    mx.eval(out)
+    assert out.shape == (2, 1, 1, 16)
+
+
+def test_adaptive_avg_pool2d_downscale():
+    """Downsample from 16x16 to 4x4."""
+    model = AdaptiveAvgPool2d(output_size=(4, 4))
+    x = mx.random.normal((1, 16, 16, 3))
+    out = model(x)
+    mx.eval(out)
+    assert out.shape == (1, 4, 4, 3)
+
+
+def test_adaptive_avg_pool2d_int_output_size():
+    """Integer output_size is broadcast to (n, n)."""
+    model = AdaptiveAvgPool2d(output_size=2)
+    x = mx.random.normal((1, 8, 8, 4))
+    out = model(x)
+    mx.eval(out)
+    assert out.shape == (1, 2, 2, 4)

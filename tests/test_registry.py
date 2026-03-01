@@ -35,6 +35,19 @@ EXPECTED_LAYERS = [
     ("GroupNorm",         "nn.GroupNorm",           "identity"),
     ("InstanceNorm1d",    "nn.InstanceNorm",        "identity"),
     ("InstanceNorm2d",    "nn.InstanceNorm",        "identity"),
+    ("MaxPool1d",         "nn.MaxPool1d",           "identity"),
+    ("MaxPool2d",         "nn.MaxPool2d",           "identity"),
+    ("MaxPool3d",         "nn.MaxPool3d",           "identity"),
+    ("AvgPool1d",         "nn.AvgPool1d",           "identity"),
+    ("AvgPool2d",         "nn.AvgPool2d",           "identity"),
+    ("AvgPool3d",         "nn.AvgPool3d",           "identity"),
+    ("AdaptiveAvgPool2d", "None",                   "identity"),
+    ("Flatten",           "None",                   "identity"),
+    ("TransformerEncoder","None",                   "identity"),
+    ("TransformerDecoder","None",                   "identity"),
+    ("TransformerEncoderLayer","None",              "identity"),
+    ("TransformerDecoderLayer","None",              "identity"),
+    ("NonDynamicallyQuantizableLinear","nn.Linear", "identity"),
 ]
 
 EXPECTED_OPS = [
@@ -66,6 +79,8 @@ EXPECTED_OPS = [
     ("torch.zeros",   "mx.zeros",         {"dtype": "dtype"}),
     ("torch.ones",    "mx.ones",          {"dtype": "dtype"}),
     ("torch.randn",   "mx.random.normal", {}),
+    ("x.chunk",       "mx.split",         {"dim": "axis"}),
+    ("torch.chunk",   "mx.split",         {"dim": "axis"}),
 ]
 
 # ── LAYER_REGISTRY tests ─────────────────────────────────────────────────────

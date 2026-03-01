@@ -66,6 +66,8 @@ def _populate() -> None:
         OpMapping("torch.zeros",     "mx.zeros",          {"dtype": "dtype"}, "dtype values differ across frameworks"),
         OpMapping("torch.ones",      "mx.ones",           {"dtype": "dtype"}, "dtype values differ across frameworks"),
         OpMapping("torch.randn",     "mx.random.normal",  {},                 "Different seeding semantics"),
+        OpMapping("x.chunk",         "mx.split",          {"dim": "axis"},    "Method form of chunk"),
+        OpMapping("torch.chunk",     "mx.split",          {"dim": "axis"},    "Functional form of chunk"),
     ]
     for entry in _ENTRIES:
         register_op(entry)

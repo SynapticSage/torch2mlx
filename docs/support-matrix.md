@@ -5,7 +5,7 @@
 
 ## Layer Mappings (`LAYER_REGISTRY`)
 
-24 torch.nn module classes with automatic conversion support.
+37 torch.nn module classes with automatic conversion support.
 
 | Torch Layer | MLX Equivalent | Weight Rule | Registry Test | Weight Test | E2E Test | Template |
 |---|---|---|---|---|---|---|
@@ -33,21 +33,34 @@
 | `nn.GroupNorm` | `nn.GroupNorm` | identity | test_registry.py | — | — | — |
 | `nn.InstanceNorm1d` | `nn.InstanceNorm` | identity | test_registry.py | — | — | — |
 | `nn.InstanceNorm2d` | `nn.InstanceNorm` | identity | test_registry.py | — | — | — |
+| `nn.MaxPool1d` | `nn.MaxPool1d` | identity | test_registry.py | — | — | — |
+| `nn.MaxPool2d` | `nn.MaxPool2d` | identity | test_registry.py | — | — | — |
+| `nn.MaxPool3d` | `nn.MaxPool3d` | identity | test_registry.py | — | — | — |
+| `nn.AvgPool1d` | `nn.AvgPool1d` | identity | test_registry.py | — | — | — |
+| `nn.AvgPool2d` | `nn.AvgPool2d` | identity | test_registry.py | — | — | — |
+| `nn.AvgPool3d` | `nn.AvgPool3d` | identity | test_registry.py | — | — | — |
+| `nn.AdaptiveAvgPool2d` | None (template) | identity | test_registry.py | — | — | AdaptiveAvgPool2d |
+| `nn.TransformerEncoder` | None (decompose) | identity | test_registry.py | — | — | — |
+| `nn.TransformerDecoder` | None (decompose) | identity | test_registry.py | — | — | — |
+| `nn.Flatten` | None (stateless) | identity | test_registry.py | — | test_e2e_models.py | — |
+| `nn.TransformerEncoderLayer` | None (decompose) | identity | test_registry.py | — | test_e2e_models.py | — |
+| `nn.TransformerDecoderLayer` | None (decompose) | identity | test_registry.py | — | — | — |
+| `NonDynamicallyQuantizableLinear` | `nn.Linear` | identity | test_registry.py | — | test_e2e_models.py | — |
 
 ### Notable Unsupported Layers
 
 | Category | Torch Layers | Difficulty | Blockers / Notes |
 |---|---|---|---|
-| Pooling | `MaxPool1d/2d/3d`, `AvgPool1d/2d/3d`, `AdaptiveAvgPool2d` | Hard | MLX has no pooling primitives. Requires manual reduce or strided conv workaround. `AdaptiveAvgPool2d` needs dynamic output-size logic. |
+| ~~Pooling~~ | ~~`MaxPool1d/2d/3d`, `AvgPool1d/2d/3d`, `AdaptiveAvgPool2d`~~ | ~~Hard~~ | Now supported — see layer table above. Native MLX pooling + custom AdaptiveAvgPool2d template. |
 | Recurrent | `LSTM`, `GRU`, `RNN` | Out of scope | Stateful + sequential execution. MLX has no built-in RNN. Would need hand-written scan loop + hidden state management. |
 | Conv variants | `Conv3d`, `ConvTranspose3d` | Medium | MLX lacks `Conv3d` entirely. `ConvTranspose2d` now supported — see layer table above. |
 | ~~Normalization~~ | ~~`GroupNorm`, `InstanceNorm1d/2d`~~ | ~~Easy~~ | Now supported — see layer table above |
 | ~~Activations~~ | ~~`Tanh`, `Sigmoid`, `LeakyReLU`, `Softmax`~~ | ~~Easy~~ | Now supported — see layer table above |
-| Attention | `TransformerEncoder`, `TransformerDecoder` | Medium | Compound modules — no 1:1 MLX equivalent. Must decompose into per-layer mappings or use template approach. Cross-attention in decoder adds complexity. |
+| ~~Attention~~ | ~~`TransformerEncoder`, `TransformerDecoder`~~ | ~~Medium~~ | Now supported — decompose into registered children automatically. |
 
 ## Op Mappings (`OP_REGISTRY`)
 
-28 functional/tensor operations with automatic mapping.
+30 functional/tensor operations with automatic mapping.
 
 | Torch Op | MLX Equivalent | Param Renames | Registry Test | Used in Templates |
 |---|---|---|---|---|
@@ -79,6 +92,8 @@
 | `torch.zeros` | `mx.zeros` | `dtype` → `dtype` | test_registry.py | — |
 | `torch.ones` | `mx.ones` | `dtype` → `dtype` | test_registry.py | — |
 | `torch.randn` | `mx.random.normal` | — | test_registry.py | — |
+| `x.chunk` | `mx.split` | `dim` → `axis` | test_registry.py | — |
+| `torch.chunk` | `mx.split` | `dim` → `axis` | test_registry.py | — |
 
 ### Notable Unsupported Ops
 
@@ -86,7 +101,7 @@
 |---|---|---|---|
 | ~~Einsum~~ | ~~`torch.einsum`~~ | ~~Easy~~ | Now supported — see op table above |
 | ~~Matmul~~ | ~~`torch.matmul`, `@` operator~~ | ~~Easy~~ | Now supported — see op table above |
-| Tensor methods | `.chunk` | Easy | MLX lacks direct `.chunk`; can be expressed via `mx.split`. |
+| ~~Tensor methods~~ | ~~`.chunk`~~ | ~~Easy~~ | Now supported — see op table above. |
 | ~~Reduction~~ | ~~`.sum`, `.mean`, `.max`, `.min`~~ | ~~Easy~~ | Now supported — see op table above |
 | ~~Loss functions~~ | ~~`F.cross_entropy`, `F.mse_loss`~~ | ~~Medium~~ | Now supported — see op table above. Note: no `reduction` param in MLX, different label format. |
 | ~~Creation~~ | ~~`torch.zeros`, `torch.ones`, `torch.randn`~~ | ~~Medium~~ | Now supported — see op table above. Note: dtype mapping needed, `torch.randn` has different seeding. |
@@ -123,12 +138,12 @@ Patterns scanned in `forward()` source code to flag non-convertible constructs.
 
 | Metric | Count |
 |---|---|
-| Supported layer types | 24 |
-| Supported op mappings | 28 |
+| Supported layer types | 37 |
+| Supported op mappings | 30 |
 | Weight transposition rules | 6 |
 | Blocker patterns detected | 6 |
-| Total tests | 182 |
-| Templates | 4 (MLP, TransformerBlock, ConvBlock, ConvStack) |
+| Total tests | 215 |
+| Templates | 5 (MLP, TransformerBlock, ConvBlock, ConvStack, AdaptiveAvgPool2d) |
 
 ### Test Coverage by Module
 
@@ -140,4 +155,6 @@ Patterns scanned in `forward()` source code to flag non-convertible constructs.
 | `state_dict.py` | test_weights.py | 3 safetensors + 5 flatten/unflatten |
 | `analyzer.py` | test_analyzer.py | 5 report unit + 5 analyze + 4 blocker |
 | `converter.py` | test_converter.py | 6 state_dict + 4 module_map + 2 roundtrip + 4 e2e |
-| `templates/` | test_templates.py | 5 MLP + 4 transformer + 3 conv_block + 3 conv_stack |
+| `templates/` | test_templates.py | 5 MLP + 4 transformer + 3 conv_block + 3 conv_stack + 3 adaptive_pool |
+| `__main__.py` | test_e2e_models.py | 4 CLI smoke tests |
+| E2E models | test_e2e_models.py | 2 ResNet + 2 Transformer + 1 export API |

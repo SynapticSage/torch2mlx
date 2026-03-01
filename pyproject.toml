@@ -23,6 +23,9 @@ dev = [
 ]
 all = ["torch2mlx[mlx,torch,dev]"]
 
+[project.scripts]
+torch2mlx = "torch2mlx.__main__:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/torch2mlx"]
 

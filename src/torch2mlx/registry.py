@@ -65,6 +65,22 @@ def _populate() -> None:
         LayerMapping("GroupNorm",        "nn.GroupNorm",         "identity",        "MLX uses dims not num_channels"),
         LayerMapping("InstanceNorm1d",   "nn.InstanceNorm",     "identity",        "MLX default affine=False"),
         LayerMapping("InstanceNorm2d",   "nn.InstanceNorm",     "identity",        "MLX default affine=False"),
+        # Pooling — native MLX, no learnable parameters
+        LayerMapping("MaxPool1d",        "nn.MaxPool1d",        "identity",        "Native MLX, no params"),
+        LayerMapping("MaxPool2d",        "nn.MaxPool2d",        "identity",        "Native MLX, no params"),
+        LayerMapping("MaxPool3d",        "nn.MaxPool3d",        "identity",        "Native MLX, no params"),
+        LayerMapping("AvgPool1d",        "nn.AvgPool1d",        "identity",        "Native MLX, no params"),
+        LayerMapping("AvgPool2d",        "nn.AvgPool2d",        "identity",        "Native MLX, no params"),
+        LayerMapping("AvgPool3d",        "nn.AvgPool3d",        "identity",        "Native MLX, no params"),
+        LayerMapping("AdaptiveAvgPool2d","None",                "identity",        "Custom template, dynamic kernel/stride"),
+        LayerMapping("Flatten",          "None",                "identity",        "Stateless, use mx.flatten"),
+        # Compound modules — decompose into registered children
+        LayerMapping("TransformerEncoder",     "None",          "identity",        "Decomposes into registered children"),
+        LayerMapping("TransformerDecoder",     "None",          "identity",        "Decomposes into registered children"),
+        LayerMapping("TransformerEncoderLayer","None",          "identity",        "Decomposes into registered children"),
+        LayerMapping("TransformerDecoderLayer","None",          "identity",        "Decomposes into registered children"),
+        # PyTorch internal Linear subclass (used in MultiheadAttention)
+        LayerMapping("NonDynamicallyQuantizableLinear","nn.Linear","identity",     "Internal torch Linear subclass"),
     ]
     for entry in _ENTRIES:
         register(entry)

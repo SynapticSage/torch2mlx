@@ -13,7 +13,8 @@ try:
     from torch2mlx.templates.mlp import MLP
     from torch2mlx.templates.transformer import TransformerBlock
     from torch2mlx.templates.cnn import ConvBlock, ConvStack
+    from torch2mlx.templates.pooling import AdaptiveAvgPool2d
 
-    __all__ = ["MLP", "TransformerBlock", "ConvBlock", "ConvStack"]
+    __all__ = ["MLP", "TransformerBlock", "ConvBlock", "ConvStack", "AdaptiveAvgPool2d"]
 except ImportError:
     __all__ = []
