@@ -49,9 +49,13 @@ EXPECTED_LAYERS = [
     ("TransformerDecoderLayer","None",              "identity"),
     ("NonDynamicallyQuantizableLinear","nn.Linear", "identity"),
     # HuggingFace custom types
-    ("GELUActivation",    "nn.GELU",   "identity"),
-    ("NewGELUActivation", "nn.GELU",   "identity"),
-    ("Conv1D",            "nn.Linear", "linear_transposed"),
+    ("GELUActivation",    "nn.GELU",      "identity"),
+    ("NewGELUActivation", "nn.GELU",      "identity"),
+    ("QuickGELUActivation","nn.GELU",     "identity"),
+    ("Conv1D",            "nn.Linear",    "linear_transposed"),
+    ("T5LayerNorm",       "nn.RMSNorm",   "identity"),
+    ("WhisperPositionalEmbedding","nn.Embedding","identity"),
+    ("DebertaLayerNorm",  "nn.LayerNorm", "identity"),
 ]
 
 EXPECTED_OPS = [

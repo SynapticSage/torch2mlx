@@ -82,9 +82,13 @@ def _populate() -> None:
         # PyTorch internal Linear subclass (used in MultiheadAttention)
         LayerMapping("NonDynamicallyQuantizableLinear","nn.Linear","identity",     "Internal torch Linear subclass"),
         # HuggingFace custom types
-        LayerMapping("GELUActivation",    "nn.GELU",    "identity",           "HF custom GELU wrapper"),
-        LayerMapping("NewGELUActivation", "nn.GELU",    "identity",           "HF GPT-2 GELU variant"),
-        LayerMapping("Conv1D",            "nn.Linear",  "linear_transposed",  "HF GPT-2 Linear with [in,out] weights"),
+        LayerMapping("GELUActivation",    "nn.GELU",      "identity",           "HF custom GELU wrapper"),
+        LayerMapping("NewGELUActivation", "nn.GELU",      "identity",           "HF GPT-2 GELU variant"),
+        LayerMapping("QuickGELUActivation","nn.GELU",     "identity",           "HF CLIP x*sigmoid(1.702x) approx"),
+        LayerMapping("Conv1D",            "nn.Linear",    "linear_transposed",  "HF GPT-2 Linear with [in,out] weights"),
+        LayerMapping("T5LayerNorm",       "nn.RMSNorm",   "identity",           "HF T5 RMSNorm (no bias, no mean)"),
+        LayerMapping("WhisperPositionalEmbedding","nn.Embedding","identity",    "HF Whisper nn.Embedding subclass"),
+        LayerMapping("DebertaLayerNorm",  "nn.LayerNorm", "identity",           "HF DeBERTa custom LayerNorm"),
     ]
     for entry in _ENTRIES:
         register(entry)
