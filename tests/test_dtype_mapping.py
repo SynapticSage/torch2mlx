@@ -10,15 +10,15 @@ from torch2mlx.op_mapping import DTYPE_REGISTRY, DtypeMapping, get_dtype_mapping
 # ── Expected contents ────────────────────────────────────────────────────────
 
 EXPECTED_DTYPES = [
-    ("torch.float16",    "mx.float16"),
-    ("torch.float32",    "mx.float32"),
-    ("torch.bfloat16",   "mx.bfloat16"),
-    ("torch.int8",       "mx.int8"),
-    ("torch.int16",      "mx.int16"),
-    ("torch.int32",      "mx.int32"),
-    ("torch.int64",      "mx.int64"),
-    ("torch.uint8",      "mx.uint8"),
-    ("torch.bool",       "mx.bool_"),
+    ("torch.float16", "mx.float16"),
+    ("torch.float32", "mx.float32"),
+    ("torch.bfloat16", "mx.bfloat16"),
+    ("torch.int8", "mx.int8"),
+    ("torch.int16", "mx.int16"),
+    ("torch.int32", "mx.int32"),
+    ("torch.int64", "mx.int64"),
+    ("torch.uint8", "mx.uint8"),
+    ("torch.bool", "mx.bool_"),
 ]
 
 

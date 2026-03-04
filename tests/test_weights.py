@@ -19,6 +19,7 @@ from torch2mlx.state_dict import flatten, load_safetensors, save_safetensors, un
 # Transposition shape tests
 # ---------------------------------------------------------------------------
 
+
 class TestTranspositionShapes:
     def test_identity(self):
         arr = np.zeros((4, 3))
@@ -48,6 +49,7 @@ class TestTranspositionShapes:
 # ---------------------------------------------------------------------------
 # Transposition value tests
 # ---------------------------------------------------------------------------
+
 
 class TestTranspositionValues:
     def test_identity_values(self):
@@ -93,6 +95,7 @@ class TestTranspositionValues:
 # convert_weight dispatch + error
 # ---------------------------------------------------------------------------
 
+
 class TestConvertWeight:
     def test_unknown_rule_raises_key_error(self):
         arr = np.zeros((4, 4))
@@ -108,10 +111,18 @@ class TestConvertWeight:
 # available_rules
 # ---------------------------------------------------------------------------
 
+
 class TestAvailableRules:
     def test_contains_expected_rules(self):
         rules = available_rules()
-        for expected in ["identity", "conv1d", "conv2d", "conv_transpose1d", "conv_transpose2d", "batch_norm"]:
+        for expected in [
+            "identity",
+            "conv1d",
+            "conv2d",
+            "conv_transpose1d",
+            "conv_transpose2d",
+            "batch_norm",
+        ]:
             assert expected in rules, f"Missing rule: {expected!r}"
 
     def test_returns_list(self):
@@ -121,6 +132,7 @@ class TestAvailableRules:
 # ---------------------------------------------------------------------------
 # Safetensors roundtrip
 # ---------------------------------------------------------------------------
+
 
 class TestSafetensorsRoundtrip:
     def test_float32_roundtrip(self, tmp_path):
@@ -157,6 +169,7 @@ class TestSafetensorsRoundtrip:
 # ---------------------------------------------------------------------------
 # Flatten / unflatten
 # ---------------------------------------------------------------------------
+
 
 class TestFlattenUnflatten:
     def test_roundtrip(self):
@@ -199,6 +212,7 @@ class TestFlattenUnflatten:
 # Reverse transposition shape tests (MLX → PyTorch)
 # ---------------------------------------------------------------------------
 
+
 class TestReverseTranspositionShapes:
     def test_identity(self):
         arr = np.zeros((4, 3))
@@ -232,6 +246,7 @@ class TestReverseTranspositionShapes:
 # ---------------------------------------------------------------------------
 # Reverse transposition value tests
 # ---------------------------------------------------------------------------
+
 
 class TestReverseTranspositionValues:
     def test_conv1d_values(self):
@@ -267,6 +282,7 @@ class TestReverseTranspositionValues:
 # convert_weight_reverse dispatch + error
 # ---------------------------------------------------------------------------
 
+
 class TestConvertWeightReverse:
     def test_unknown_rule_raises_key_error(self):
         arr = np.zeros((4, 4))
@@ -284,6 +300,7 @@ class TestConvertWeightReverse:
 # ---------------------------------------------------------------------------
 # Roundtrip: PyTorch → MLX → PyTorch (per-rule)
 # ---------------------------------------------------------------------------
+
 
 class TestWeightRoundtrip:
     """For every rule, convert forward then reverse and verify exact match."""

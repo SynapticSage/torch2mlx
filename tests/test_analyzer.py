@@ -11,6 +11,7 @@ from torch2mlx.analyzer import PortabilityReport, detect_blockers
 # Mock-based tests (no torch required)
 # ---------------------------------------------------------------------------
 
+
 class TestPortabilityReport:
     def test_coverage_zero_when_empty(self):
         r = PortabilityReport()
@@ -92,12 +93,14 @@ class TestAnalyzeSimpleModel:
 
     def test_fully_composed_custom_module_counts_as_mapped(self):
         """Custom module whose children are all registered counts as mapped."""
+
         class MyBlock(nn.Module):
             def __init__(self):
                 super().__init__()
                 self.conv = nn.Conv2d(3, 16, 3)
                 self.bn = nn.BatchNorm2d(16)
                 self.relu = nn.ReLU()
+
             def forward(self, x):
                 return self.relu(self.bn(self.conv(x)))
 
@@ -108,6 +111,7 @@ class TestAnalyzeSimpleModel:
 
     def test_partially_composed_module_stays_unmapped(self):
         """Custom module with an unmapped leaf child stays unmapped."""
+
         class UnknownOp(nn.Module):
             def forward(self, x):
                 return x
@@ -117,6 +121,7 @@ class TestAnalyzeSimpleModel:
                 super().__init__()
                 self.linear = nn.Linear(4, 4)
                 self.custom = UnknownOp()
+
             def forward(self, x):
                 return self.custom(self.linear(x))
 
@@ -162,6 +167,7 @@ class TestBlockerDetection:
 
     def test_no_torch_raises_import_error(self, monkeypatch):
         import torch2mlx.analyzer as mod
+
         original = mod.HAS_TORCH
         monkeypatch.setattr(mod, "HAS_TORCH", False)
         with pytest.raises(ImportError, match="torch is required"):

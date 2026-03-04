@@ -19,6 +19,7 @@ from torch2mlx.registry import lookup
 
 try:
     import torch.nn as nn  # noqa: F401
+
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -79,7 +80,12 @@ def detect_blockers(module: object) -> list[str]:
         if stripped.startswith("#"):
             continue
         # += on a line that isn't a simple counter (heuristic)
-        if "+=" in stripped and "total" not in stripped and "count" not in stripped and "i +=" not in stripped:
+        if (
+            "+=" in stripped
+            and "total" not in stripped
+            and "count" not in stripped
+            and "i +=" not in stripped
+        ):
             desc = "In-place operation: += assignment found in forward()"
             if desc not in blockers:
                 blockers.append(desc)
@@ -97,10 +103,7 @@ def _is_fully_composed(module: object) -> bool:
     children = list(module.children())
     if not children:
         return False
-    return all(
-        lookup(type(c).__name__) is not None or _is_fully_composed(c)
-        for c in children
-    )
+    return all(lookup(type(c).__name__) is not None or _is_fully_composed(c) for c in children)
 
 
 def analyze(module: object) -> PortabilityReport:

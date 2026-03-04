@@ -8,7 +8,7 @@ Approach: Module-Tree Walk + Weight Convert
 
 Public API::
 
-    from torch2mlx import convert, load_converted, export, analyze
+    from torch2mlx import convert, load_converted, export, analyze, generate
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from pathlib import Path
 __version__ = "0.1.0"
 
 from torch2mlx.analyzer import PortabilityReport, analyze
+from torch2mlx.codegen import GeneratedCode, generate
 from torch2mlx.converter import convert, load_converted
 
 
@@ -49,5 +50,7 @@ __all__ = [
     "load_converted",
     "export",
     "analyze",
+    "generate",
     "PortabilityReport",
+    "GeneratedCode",
 ]

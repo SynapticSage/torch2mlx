@@ -19,6 +19,7 @@ from torch2mlx.state_dict import save_safetensors
 try:
     import torch  # noqa: F401
     import torch.nn as nn
+
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -29,6 +30,7 @@ requires_torch = pytest.mark.skipif(not HAS_TORCH, reason="torch not installed")
 # ---------------------------------------------------------------------------
 # convert_state_dict
 # ---------------------------------------------------------------------------
+
 
 def test_convert_state_dict_applies_conv2d_transposition():
     """conv2d rule: [O, I, H, W] -> [O, H, W, I]."""
@@ -91,6 +93,7 @@ def test_convert_state_dict_non_weight_keys_untouched():
 # build_module_map
 # ---------------------------------------------------------------------------
 
+
 def test_build_module_map_known_classes():
     """Known torch class names are mapped to their transposition rules."""
     named = [("fc", "Linear"), ("conv", "Conv2d"), ("embed", "Embedding")]
@@ -123,6 +126,7 @@ def test_build_module_map_conv1d_rule():
 # load_converted roundtrip
 # ---------------------------------------------------------------------------
 
+
 def test_load_converted_roundtrip(tmp_path):
     """save_safetensors -> load_converted produces correct nested structure."""
     flat = {
@@ -151,6 +155,7 @@ def test_load_converted_flat_key(tmp_path):
 # ---------------------------------------------------------------------------
 # Torch-dependent end-to-end tests
 # ---------------------------------------------------------------------------
+
 
 @requires_torch
 def test_end_to_end_linear(tmp_path):
@@ -200,6 +205,7 @@ def test_convert_returns_path(tmp_path):
 # ---------------------------------------------------------------------------
 # convert_state_dict_to_pytorch (reverse conversion)
 # ---------------------------------------------------------------------------
+
 
 def test_reverse_conv2d_shape():
     """Reverse conv2d: [O, H, W, I] -> [O, I, H, W]."""

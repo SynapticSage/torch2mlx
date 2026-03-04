@@ -56,8 +56,7 @@ def test_mini_resnet_analysis(tmp_path):
     model = _make_mini_resnet()
     report = analyze(model)
     assert report.coverage == 1.0, (
-        f"Expected 100% coverage, got {report.coverage:.1%}. "
-        f"Unmapped: {report.unmapped_layers}"
+        f"Expected 100% coverage, got {report.coverage:.1%}. Unmapped: {report.unmapped_layers}"
     )
     assert len(report.blockers) == 0
 
@@ -97,8 +96,7 @@ def test_transformer_encoder_analysis(tmp_path):
     report = analyze(model)
     # All sub-modules (Linear, MultiheadAttention, LayerNorm, Dropout) are registered
     assert report.coverage > 0.9, (
-        f"Expected >90% coverage, got {report.coverage:.1%}. "
-        f"Unmapped: {report.unmapped_layers}"
+        f"Expected >90% coverage, got {report.coverage:.1%}. Unmapped: {report.unmapped_layers}"
     )
 
 
