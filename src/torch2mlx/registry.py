@@ -109,6 +109,20 @@ def _populate() -> None:
         LayerMapping("ParametrizedConv1d","nn.Conv1d",    "conv1d",             "Conv1d with parametrization (weight_norm)"),
         LayerMapping("ParametrizationList","None",         "identity",           "PyTorch parametrization container"),
         LayerMapping("_WeightNorm",       "None",          "identity",           "PyTorch weight_norm internal, no params"),
+        # More HuggingFace activations & norms
+        LayerMapping("FalconLinear",      "nn.Linear",    "identity",           "HF Falcon nn.Linear subclass"),
+        LayerMapping("ReLU6",             "None",          "identity",           "min(max(0,x),6) — stateless, no MLX equiv"),
+        # Rotary embedding variants (computed sin/cos, no learned weights)
+        LayerMapping("GPTNeoXRotaryEmbedding","None",      "identity",           "Pythia/GPT-NeoX RoPE"),
+        LayerMapping("FalconRotaryEmbedding","None",       "identity",           "Falcon RoPE"),
+        # Embedding subclasses
+        LayerMapping("PegasusSinusoidalPositionalEmbedding","nn.Embedding","identity","HF Pegasus sinusoidal pos embed"),
+        # DropPath variants (stochastic depth — identity at eval)
+        LayerMapping("BeitDropPath",      "None",          "identity",           "BEiT stochastic depth"),
+        LayerMapping("SegformerDropPath",  "None",          "identity",           "SegFormer stochastic depth"),
+        # Architecture-specific leaves
+        LayerMapping("BeitRelativePositionBias","None",    "identity",           "BEiT learned relative pos bias table"),
+        LayerMapping("HubertSamePadLayer","None",          "identity",           "HuBERT padding removal, no params"),
     ]
     for entry in _ENTRIES:
         register(entry)

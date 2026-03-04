@@ -72,7 +72,7 @@ src/torch2mlx/
 
 ## What's supported
 
-**62** layer types, **30** ops, **12** dtype mappings, **7** weight transposition rules — covering Linear, Conv1d/2d, ConvTranspose1d/2d, BatchNorm, LayerNorm, RMSNorm, Embedding, MultiheadAttention, GroupNorm, InstanceNorm, pooling (MaxPool/AvgPool 1d/2d/3d, AdaptiveAvgPool2d), Transformer encoder/decoder, common activations (GELU, ReLU, SiLU, Tanh, Sigmoid, LeakyReLU, Softmax), and tensor ops (einsum, matmul, reshape, squeeze/unsqueeze, reductions, etc.).
+**72** layer types, **30** ops, **12** dtype mappings, **7** weight transposition rules — covering Linear, Conv1d/2d, ConvTranspose1d/2d, BatchNorm, LayerNorm, RMSNorm, Embedding, MultiheadAttention, GroupNorm, InstanceNorm, pooling (MaxPool/AvgPool 1d/2d/3d, AdaptiveAvgPool2d), Transformer encoder/decoder, common activations (GELU, ReLU, SiLU, Tanh, Sigmoid, LeakyReLU, Softmax), and tensor ops (einsum, matmul, reshape, squeeze/unsqueeze, reductions, etc.).
 
 Works with `torch.compile()` — compiled models convert identically to uncompiled ones.
 
@@ -80,15 +80,15 @@ See [docs/support-matrix.md](docs/support-matrix.md) for the full table.
 
 ### Tested HuggingFace models
 
-The analyzer reports **100% coverage** on all 22 tested architectures:
+The analyzer reports **100% coverage** on all 36 tested architectures:
 
 | Category | Models |
 |---|---|
-| Encoder | BERT, RoBERTa, DistilBERT, ALBERT, DeBERTa, Electra, MPNet |
-| Decoder / Causal LM | GPT-2, GPT-Neo, OPT, BLOOM, Qwen2 |
-| Encoder-Decoder | T5, BART |
-| Vision | ViT, CLIP, Swin Transformer, ConvNeXt, DINOv2 |
-| Speech | Whisper, Wav2Vec2 |
+| Encoder | BERT, RoBERTa, DistilBERT, ALBERT, DeBERTa, DeBERTa-v3, Electra, MPNet, Longformer, Funnel, CamemBERT, Data2Vec-Text |
+| Decoder / Causal LM | GPT-2, GPT-Neo, OPT, BLOOM, Qwen2, Pythia, CodeGen, Falcon |
+| Encoder-Decoder | T5, BART, Pegasus |
+| Vision | ViT, CLIP, Swin Transformer, ConvNeXt, DINOv2, BEiT, SegFormer, MobileNetV2, ResNet |
+| Speech | Whisper, Wav2Vec2, HuBERT |
 | Other | XLNet |
 
 **Not supported** (architectural blockers): RNNs/LSTMs (stateful, out of scope), Conv3d (MLX lacks it), in-place mutation patterns (`+=`, `.copy_()` — MLX arrays are immutable).
@@ -133,13 +133,13 @@ These are reference implementations, not auto-generated. Use them directly or as
 
 | Metric | |
 |---|---|
-| Layer types | 62 |
+| Layer types | 72 |
 | Op mappings | 30 |
 | Dtype mappings | 12 |
 | Transposition rules | 7 (+ reverse for round-trip) |
 | Templates | 5 (MLP, Transformer, ConvBlock, ConvStack, AdaptiveAvgPool2d) |
-| Tests | 292 |
-| HuggingFace models tested | 22/22 at 100% |
+| Tests | 301 |
+| HuggingFace models tested | 36/36 at 100% |
 
 ## Roadmap
 
@@ -157,7 +157,7 @@ See [next-steps.md](next-steps.md) for detailed plans including the three-level 
 
 ```bash
 pip install -e ".[all]"          # Install with torch + mlx + dev deps
-python -m pytest                 # Run tests (292 tests)
+python -m pytest                 # Run tests (301 tests)
 ruff check src/                  # Lint
 ruff format src/ tests/          # Format
 ```

@@ -73,6 +73,15 @@ EXPECTED_LAYERS = [
     ("ParametrizedConv1d","nn.Conv1d",     "conv1d"),
     ("ParametrizationList","None",         "identity"),
     ("_WeightNorm",       "None",          "identity"),
+    ("FalconLinear",      "nn.Linear",     "identity"),
+    ("ReLU6",             "None",          "identity"),
+    ("GPTNeoXRotaryEmbedding","None",      "identity"),
+    ("FalconRotaryEmbedding","None",       "identity"),
+    ("PegasusSinusoidalPositionalEmbedding","nn.Embedding","identity"),
+    ("BeitDropPath",      "None",          "identity"),
+    ("SegformerDropPath",  "None",          "identity"),
+    ("BeitRelativePositionBias","None",    "identity"),
+    ("HubertSamePadLayer","None",          "identity"),
 ]
 
 EXPECTED_OPS = [

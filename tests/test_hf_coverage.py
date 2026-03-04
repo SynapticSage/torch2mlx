@@ -57,6 +57,25 @@ _HF_MODELS = [
     # Speech
     ("whisper", "WhisperModel", "openai/whisper-tiny"),
     ("wav2vec2", "Wav2Vec2Model", "facebook/wav2vec2-base"),
+    # More decoders / causal LMs
+    ("pythia", "GPTNeoXModel", "EleutherAI/pythia-70m"),
+    ("codegen", "CodeGenModel", "Salesforce/codegen-350M-mono"),
+    ("falcon", "FalconModel", "tiiuae/falcon-rw-1b"),
+    # More encoders
+    ("longformer", "LongformerModel", "allenai/longformer-base-4096"),
+    ("deberta_v3", "DebertaV2Model", "microsoft/deberta-v3-small"),
+    ("funnel", "FunnelModel", "funnel-transformer/small"),
+    ("camembert", "CamembertModel", "camembert-base"),
+    ("data2vec_text", "Data2VecTextModel", "facebook/data2vec-text-base"),
+    # More encoder-decoder
+    ("pegasus", "PegasusModel", "google/pegasus-xsum"),
+    # More vision
+    ("resnet_hf", "ResNetModel", "microsoft/resnet-18"),
+    ("beit", "BeitModel", "microsoft/beit-base-patch16-224"),
+    ("segformer", "SegformerModel", "nvidia/mit-b0"),
+    ("mobilenet", "MobileNetV2Model", "google/mobilenet_v2_1.0_224"),
+    # More speech
+    ("hubert", "HubertModel", "facebook/hubert-base-ls960"),
     # Misc
     ("xlnet", "XLNetModel", "xlnet-base-cased"),
 ]
