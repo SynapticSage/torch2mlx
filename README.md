@@ -119,11 +119,39 @@ Hand-written MLX implementations for common architecture patterns:
 
 These are reference implementations, not auto-generated. Use them directly or as a starting point for hand-porting custom architectures.
 
+## Progress
+
+| Phase | Status | Highlights |
+|---|---|---|
+| **P0 — Layer & op coverage** | Done | 62 layer mappings, 30 op mappings, 7 transposition rules, 12 dtype mappings |
+| **P1 — CLI & API** | Done | `python -m torch2mlx`, public API (`convert`, `analyze`, `export`), e2e tests, 3 numerical equivalence examples |
+| **P2 — Polish** | Done | PyPI metadata, support-matrix cleanup, dtype registry, `torch.compile` interop |
+| **P3 — HuggingFace validation** | Done | 22/22 models at 100% analyzer coverage, weight round-trip (MLX→PyTorch) |
+| **Training support** | Planned | Lightning-compatible MLX Trainer — [see roadmap](next-steps.md) |
+
+### Current numbers
+
+| Metric | |
+|---|---|
+| Layer types | 62 |
+| Op mappings | 30 |
+| Dtype mappings | 12 |
+| Transposition rules | 7 (+ reverse for round-trip) |
+| Templates | 5 (MLP, Transformer, ConvBlock, ConvStack, AdaptiveAvgPool2d) |
+| Tests | 292 |
+| HuggingFace models tested | 22/22 at 100% |
+
 ## Roadmap
 
 torch2mlx currently targets **inference-only** conversion of feed-forward architectures.
 
-**Training support** is planned via a Lightning-compatible MLX Trainer — users would provide an MLX-native `forward()` while weights, optimizers, schedulers, and the training loop are automated. 
+Planned next:
+- **Auto template generation** — generate MLX module stubs from torch module trees
+- **Decorator API** — `@torch2mlx.export` for compile-style annotation
+- **Weight streaming** — convert large models without loading full state dict into memory
+- **Training support** — Lightning-compatible MLX Trainer where users provide an MLX-native `forward()` while weights, optimizers, schedulers, and the training loop are automated
+
+See [next-steps.md](next-steps.md) for detailed plans including the three-level Lightning integration strategy.
 
 ## Development
 
