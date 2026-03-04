@@ -171,12 +171,12 @@ This requires either: (a) a torch.fx full-graph capture + complete op_mapping co
 
 | Metric | Count |
 |---|---|
-| Supported layers | 44 |
+| Supported layers | 62 |
 | Supported ops | 30 |
 | Weight transposition rules | 7 |
 | Dtype mappings | 12 |
 | Blocker patterns detected | 6 |
-| Tests | 286 |
+| Tests | 292 |
 | Templates | 5 |
 | Validation examples | 3 |
-| HuggingFace coverage | 11/11 models at 100% (BERT, GPT-2, ViT, T5, RoBERTa, DistilBERT, ALBERT, DeBERTa, CLIP, Whisper, GPT-Neo) |
+| HuggingFace coverage | 22/22 models at 100% |

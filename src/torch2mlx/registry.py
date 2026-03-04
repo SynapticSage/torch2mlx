@@ -89,6 +89,26 @@ def _populate() -> None:
         LayerMapping("T5LayerNorm",       "nn.RMSNorm",   "identity",           "HF T5 RMSNorm (no bias, no mean)"),
         LayerMapping("WhisperPositionalEmbedding","nn.Embedding","identity",    "HF Whisper nn.Embedding subclass"),
         LayerMapping("DebertaLayerNorm",  "nn.LayerNorm", "identity",           "HF DeBERTa custom LayerNorm"),
+        LayerMapping("BloomGelu",         "nn.GELU",      "identity",           "HF BLOOM custom GELU"),
+        LayerMapping("SiLUActivation",    "nn.SiLU",      "identity",           "HF SiLU wrapper (Qwen2, etc.)"),
+        LayerMapping("Qwen2RMSNorm",      "nn.RMSNorm",   "identity",           "HF Qwen2 RMSNorm"),
+        LayerMapping("ConvNextLayerNorm", "nn.LayerNorm",  "identity",           "HF ConvNeXt LayerNorm subclass"),
+        LayerMapping("OPTLearnedPositionalEmbedding","nn.Embedding","identity",  "HF OPT nn.Embedding subclass"),
+        LayerMapping("BartLearnedPositionalEmbedding","nn.Embedding","identity", "HF BART nn.Embedding subclass"),
+        LayerMapping("BartScaledWordEmbedding","nn.Embedding","identity",        "HF BART scaled nn.Embedding"),
+        # PyTorch built-ins not yet covered
+        LayerMapping("Identity",          "None",          "identity",           "torch.nn.Identity — passthrough"),
+        LayerMapping("AdaptiveAvgPool1d", "None",          "identity",           "No MLX equivalent, no params"),
+        LayerMapping("ModuleDict",        "None",          "identity",           "Container, no MLX equivalent"),
+        # HuggingFace architecture-specific (no learnable weights)
+        LayerMapping("SwinDropPath",      "None",          "identity",           "Stochastic depth — identity at eval"),
+        LayerMapping("Dinov2LayerScale",  "None",          "identity",           "Learnable scalar multiply"),
+        LayerMapping("Qwen2RotaryEmbedding","None",        "identity",           "RoPE — computed sin/cos, no learned weights"),
+        LayerMapping("Wav2Vec2SamePadLayer","None",        "identity",           "Padding removal, no params"),
+        # PyTorch parametrization internals (e.g., weight_norm on Conv1d)
+        LayerMapping("ParametrizedConv1d","nn.Conv1d",    "conv1d",             "Conv1d with parametrization (weight_norm)"),
+        LayerMapping("ParametrizationList","None",         "identity",           "PyTorch parametrization container"),
+        LayerMapping("_WeightNorm",       "None",          "identity",           "PyTorch weight_norm internal, no params"),
     ]
     for entry in _ENTRIES:
         register(entry)

@@ -31,17 +31,34 @@ def _analyze_hf(cls_name: str, checkpoint: str) -> tuple[float, int, list[str]]:
 
 # (test_id, HF class name, checkpoint)
 _HF_MODELS = [
+    # Encoder models
     ("bert", "BertModel", "bert-base-uncased"),
-    ("gpt2", "GPT2Model", "gpt2"),
-    ("vit", "ViTModel", "google/vit-base-patch16-224"),
-    ("t5", "T5Model", "t5-small"),
     ("roberta", "RobertaModel", "roberta-base"),
     ("distilbert", "DistilBertModel", "distilbert-base-uncased"),
     ("albert", "AlbertModel", "albert-base-v2"),
     ("deberta", "DebertaModel", "microsoft/deberta-base"),
-    ("clip", "CLIPModel", "openai/clip-vit-base-patch32"),
-    ("whisper", "WhisperModel", "openai/whisper-tiny"),
+    ("electra", "ElectraModel", "google/electra-small-discriminator"),
+    ("mpnet", "MPNetModel", "microsoft/mpnet-base"),
+    # Decoder / causal LMs
+    ("gpt2", "GPT2Model", "gpt2"),
     ("gpt_neo", "GPTNeoModel", "EleutherAI/gpt-neo-125m"),
+    ("opt", "OPTModel", "facebook/opt-125m"),
+    ("bloom", "BloomModel", "bigscience/bloom-560m"),
+    ("qwen2", "Qwen2Model", "Qwen/Qwen2-0.5B"),
+    # Encoder-decoder
+    ("t5", "T5Model", "t5-small"),
+    ("bart", "BartModel", "facebook/bart-base"),
+    # Vision
+    ("vit", "ViTModel", "google/vit-base-patch16-224"),
+    ("clip", "CLIPModel", "openai/clip-vit-base-patch32"),
+    ("swin", "SwinModel", "microsoft/swin-tiny-patch4-window7-224"),
+    ("convnext", "ConvNextModel", "facebook/convnext-tiny-224"),
+    ("dinov2", "Dinov2Model", "facebook/dinov2-small"),
+    # Speech
+    ("whisper", "WhisperModel", "openai/whisper-tiny"),
+    ("wav2vec2", "Wav2Vec2Model", "facebook/wav2vec2-base"),
+    # Misc
+    ("xlnet", "XLNetModel", "xlnet-base-cased"),
 ]
 
 

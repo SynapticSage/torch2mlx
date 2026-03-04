@@ -56,6 +56,23 @@ EXPECTED_LAYERS = [
     ("T5LayerNorm",       "nn.RMSNorm",   "identity"),
     ("WhisperPositionalEmbedding","nn.Embedding","identity"),
     ("DebertaLayerNorm",  "nn.LayerNorm", "identity"),
+    ("BloomGelu",         "nn.GELU",      "identity"),
+    ("SiLUActivation",    "nn.SiLU",      "identity"),
+    ("Qwen2RMSNorm",      "nn.RMSNorm",   "identity"),
+    ("ConvNextLayerNorm", "nn.LayerNorm",  "identity"),
+    ("OPTLearnedPositionalEmbedding","nn.Embedding","identity"),
+    ("BartLearnedPositionalEmbedding","nn.Embedding","identity"),
+    ("BartScaledWordEmbedding","nn.Embedding","identity"),
+    ("Identity",          "None",          "identity"),
+    ("AdaptiveAvgPool1d", "None",          "identity"),
+    ("ModuleDict",        "None",          "identity"),
+    ("SwinDropPath",      "None",          "identity"),
+    ("Dinov2LayerScale",  "None",          "identity"),
+    ("Qwen2RotaryEmbedding","None",        "identity"),
+    ("Wav2Vec2SamePadLayer","None",        "identity"),
+    ("ParametrizedConv1d","nn.Conv1d",     "conv1d"),
+    ("ParametrizationList","None",         "identity"),
+    ("_WeightNorm",       "None",          "identity"),
 ]
 
 EXPECTED_OPS = [

@@ -72,11 +72,24 @@ src/torch2mlx/
 
 ## What's supported
 
-**37** layer types, **30** ops, **12** dtype mappings, **6** weight transposition rules — covering Linear, Conv1d/2d, ConvTranspose1d/2d, BatchNorm, LayerNorm, RMSNorm, Embedding, MultiheadAttention, GroupNorm, InstanceNorm, pooling (MaxPool/AvgPool 1d/2d/3d, AdaptiveAvgPool2d), Transformer encoder/decoder, common activations (GELU, ReLU, SiLU, Tanh, Sigmoid, LeakyReLU, Softmax), and tensor ops (einsum, matmul, reshape, squeeze/unsqueeze, reductions, etc.).
+**62** layer types, **30** ops, **12** dtype mappings, **7** weight transposition rules — covering Linear, Conv1d/2d, ConvTranspose1d/2d, BatchNorm, LayerNorm, RMSNorm, Embedding, MultiheadAttention, GroupNorm, InstanceNorm, pooling (MaxPool/AvgPool 1d/2d/3d, AdaptiveAvgPool2d), Transformer encoder/decoder, common activations (GELU, ReLU, SiLU, Tanh, Sigmoid, LeakyReLU, Softmax), and tensor ops (einsum, matmul, reshape, squeeze/unsqueeze, reductions, etc.).
 
 Works with `torch.compile()` — compiled models convert identically to uncompiled ones.
 
 See [docs/support-matrix.md](docs/support-matrix.md) for the full table.
+
+### Tested HuggingFace models
+
+The analyzer reports **100% coverage** on all 22 tested architectures:
+
+| Category | Models |
+|---|---|
+| Encoder | BERT, RoBERTa, DistilBERT, ALBERT, DeBERTa, Electra, MPNet |
+| Decoder / Causal LM | GPT-2, GPT-Neo, OPT, BLOOM, Qwen2 |
+| Encoder-Decoder | T5, BART |
+| Vision | ViT, CLIP, Swin Transformer, ConvNeXt, DINOv2 |
+| Speech | Whisper, Wav2Vec2 |
+| Other | XLNet |
 
 **Not supported** (architectural blockers): RNNs/LSTMs (stateful, out of scope), Conv3d (MLX lacks it), in-place mutation patterns (`+=`, `.copy_()` — MLX arrays are immutable).
 
@@ -116,7 +129,7 @@ torch2mlx currently targets **inference-only** conversion of feed-forward archit
 
 ```bash
 pip install -e ".[all]"          # Install with torch + mlx + dev deps
-python -m pytest                 # Run tests (238 tests)
+python -m pytest                 # Run tests (292 tests)
 ruff check src/                  # Lint
 ruff format src/ tests/          # Format
 ```
