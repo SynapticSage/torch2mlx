@@ -103,11 +103,6 @@ _HF_MODELS = [
     ("xlnet", "XLNetModel", "xlnet-base-cased"),
 ]
 
-# ── Models whose direct children are all registry/skip types ──────────────────
-# These get 100% init coverage because named_children() yields only leaf types.
-_FLAT_MODELS = {"gpt2", "gpt_neo", "bloom", "qwen2", "pythia", "codegen", "falcon", "xlnet"}
-
-
 # ── 1. Source always parses as valid Python ───────────────────────────────────
 
 
@@ -136,16 +131,16 @@ def test_hf_codegen_no_crash(cls_name: str, checkpoint: str) -> None:
     _codegen_hf(cls_name, checkpoint)
 
 
-# ── 3. Flat models get 100% init coverage ────────────────────────────────────
+# ── 3. All models get 100% init coverage via recursive codegen ───────────────
 
 
 @pytest.mark.parametrize(
     "cls_name,checkpoint",
-    [(c, ck) for tid, c, ck in _HF_MODELS if tid in _FLAT_MODELS],
-    ids=[tid for tid, _, _ in _HF_MODELS if tid in _FLAT_MODELS],
+    [(c, ck) for _, c, ck in _HF_MODELS],
+    ids=[tid for tid, _, _ in _HF_MODELS],
 )
-def test_hf_codegen_flat_model_full_coverage(cls_name: str, checkpoint: str) -> None:
-    """Flat-architecture HF models have 100% init coverage."""
+def test_hf_codegen_full_coverage(cls_name: str, checkpoint: str) -> None:
+    """All HF models have 100% init coverage via recursive leaf counting."""
     data = _codegen_hf(cls_name, checkpoint)
     result = data["result"]
     assert result.coverage == 1.0, (
@@ -235,7 +230,7 @@ def test_hf_codegen_fx_trace_fails(cls_name: str, checkpoint: str) -> None:
 # As we add recursive init generation, update these expected values upward.
 
 _COVERAGE_BASELINES: dict[str, float] = {
-    # Flat models — already 100%
+    # All models — recursive init codegen achieves 100% leaf coverage
     "gpt2": 1.0,
     "gpt_neo": 1.0,
     "bloom": 1.0,
@@ -244,35 +239,34 @@ _COVERAGE_BASELINES: dict[str, float] = {
     "codegen": 1.0,
     "falcon": 1.0,
     "xlnet": 1.0,
-    # Nested models — current baselines (direct children only)
-    "bert": 0.0,
-    "roberta": 0.0,
-    "distilbert": 0.0,
-    "deberta": 0.0,
-    "mpnet": 0.0,
-    "opt": 0.0,
-    "whisper": 0.0,
-    "wav2vec2": 0.0,
-    "longformer": 0.0,
-    "deberta_v3": 0.0,
-    "funnel": 0.0,
-    "camembert": 0.0,
-    "data2vec_text": 0.0,
-    "segformer": 0.0,
-    "hubert": 0.0,
-    "albert": 0.5,
-    "electra": 1 / 3,
-    "t5": 1 / 3,
-    "bart": 1 / 3,
-    "vit": 0.25,
-    "clip": 0.5,
-    "swin": 0.5,
-    "convnext": 1 / 3,
-    "dinov2": 1 / 3,
-    "pegasus": 1 / 3,
-    "resnet_hf": 1 / 3,
-    "beit": 0.25,
-    "mobilenet": 0.5,
+    "bert": 1.0,
+    "roberta": 1.0,
+    "distilbert": 1.0,
+    "deberta": 1.0,
+    "mpnet": 1.0,
+    "opt": 1.0,
+    "whisper": 1.0,
+    "wav2vec2": 1.0,
+    "longformer": 1.0,
+    "deberta_v3": 1.0,
+    "funnel": 1.0,
+    "camembert": 1.0,
+    "data2vec_text": 1.0,
+    "segformer": 1.0,
+    "hubert": 1.0,
+    "albert": 1.0,
+    "electra": 1.0,
+    "t5": 1.0,
+    "bart": 1.0,
+    "vit": 1.0,
+    "clip": 1.0,
+    "swin": 1.0,
+    "convnext": 1.0,
+    "dinov2": 1.0,
+    "pegasus": 1.0,
+    "resnet_hf": 1.0,
+    "beit": 1.0,
+    "mobilenet": 1.0,
 }
 
 
@@ -334,3 +328,34 @@ def test_falcon_init_contains_embeddings():
     data = _codegen_hf("FalconModel", "tiiuae/falcon-rw-1b")
     source = data["result"].source
     assert "nn.Embedding(" in source
+
+
+# ── 10. Recursive codegen: helper classes for nested models ──────────────────
+
+
+def test_bert_emits_helper_classes():
+    """BERT codegen should emit helper classes for composite wrappers."""
+    data = _codegen_hf("BertModel", "bert-base-uncased")
+    source = data["result"].source
+    # Key helper classes from BERT's nested structure
+    assert "class BertEmbeddings(nn.Module):" in source
+    assert "class BertEncoder(nn.Module):" in source
+    # Main class still present as last class
+    assert "class BertModel(nn.Module):" in source
+    # BertModel should reference helper classes
+    assert "self.embeddings = BertEmbeddings()" in source
+    assert "self.encoder = BertEncoder()" in source
+
+
+def test_gpt2_structure():
+    """GPT-2 codegen emits helper classes for ModuleList composites."""
+    data = _codegen_hf("GPT2Model", "gpt2")
+    source = data["result"].source
+    # GPT-2 has GPT2Block in a ModuleList → helper classes emitted
+    assert "class GPT2Model(nn.Module):" in source
+    assert "class GPT2Block(nn.Module):" in source
+    # Direct leaf constructors still present
+    assert "nn.Embedding(" in source
+    assert "nn.LayerNorm(" in source
+    # ModuleList emitted as list comprehension
+    assert "GPT2Block() for _ in range(" in source

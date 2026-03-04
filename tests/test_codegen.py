@@ -366,3 +366,410 @@ class TestEmbedding:
         result = generate(nn.Embedding(1000, 128))
         assert "nn.Embedding(1000, 128)" in result.source
         ast.parse(result.source)
+
+
+# ── Recursive codegen tests ──────────────────────────────────────────────────
+
+
+class TestNestedModelRecurses:
+    """Composite wrapper with leaf children → recurse and emit helper class."""
+
+    def test_helper_class_emitted(self):
+        from torch2mlx.codegen import generate
+
+        class InnerBlock(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(10, 10)
+                self.act = nn.ReLU()
+
+            def forward(self, x):
+                return self.act(self.fc(x))
+
+        class OuterModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.block = InnerBlock()
+                self.head = nn.Linear(10, 2)
+
+            def forward(self, x):
+                return self.head(self.block(x))
+
+        result = generate(OuterModel())
+        assert "class InnerBlock(nn.Module):" in result.source
+        assert "class OuterModel(nn.Module):" in result.source
+        assert "self.block = InnerBlock()" in result.source
+        assert "nn.Linear(10, 10)" in result.source
+        assert "nn.Linear(10, 2)" in result.source
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+    def test_unmapped_still_reported(self):
+        """Composite with an unmapped leaf child still reports it."""
+        from torch2mlx.codegen import generate
+
+        class Mystery(nn.Module):
+            def forward(self, x):
+                return x
+
+        class Wrapper(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.m = Mystery()
+                self.fc = nn.Linear(5, 5)
+
+            def forward(self, x):
+                return self.fc(self.m(x))
+
+        class Root(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.w = Wrapper()
+
+            def forward(self, x):
+                return self.w(x)
+
+        result = generate(Root())
+        assert result.coverage < 1.0
+        assert "Mystery" in result.unmapped
+
+
+class TestModuleListUniform:
+    """ModuleList of identical leaf items → list comprehension."""
+
+    def test_uniform_leaf_list(self):
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = nn.ModuleList([nn.Linear(8, 8) for _ in range(4)])
+
+            def forward(self, x):
+                for layer in self.layers:
+                    x = layer(x)
+                return x
+
+        result = generate(Model())
+        assert "nn.Linear(8, 8) for _ in range(4)" in result.source
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+
+class TestModuleListComposite:
+    """ModuleList of composite blocks → helper class + list comprehension."""
+
+    def test_composite_list(self):
+        from torch2mlx.codegen import generate
+
+        class Block(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(16, 16)
+                self.norm = nn.LayerNorm(16)
+
+            def forward(self, x):
+                return self.norm(self.fc(x))
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.blocks = nn.ModuleList([Block() for _ in range(3)])
+
+            def forward(self, x):
+                for b in self.blocks:
+                    x = b(x)
+                return x
+
+        result = generate(Model())
+        assert "class Block(nn.Module):" in result.source
+        assert "Block() for _ in range(3)" in result.source
+        assert "nn.Linear(16, 16)" in result.source
+        assert "nn.LayerNorm((16,))" in result.source
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+
+class TestSequentialMixed:
+    """Sequential with mixed leaf types → individual items in list."""
+
+    def test_mixed_sequential(self):
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.net = nn.Sequential(
+                    nn.Linear(10, 20),
+                    nn.ReLU(),
+                    nn.Linear(20, 5),
+                )
+
+            def forward(self, x):
+                return self.net(x)
+
+        result = generate(Model())
+        assert "nn.Linear(10, 20)" in result.source
+        assert "nn.ReLU()" in result.source
+        assert "nn.Linear(20, 5)" in result.source
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+
+class TestDeduplication:
+    """Same composite type referenced twice → only one helper class."""
+
+    def test_dedup(self):
+        from torch2mlx.codegen import generate
+
+        class SubBlock(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(4, 4)
+
+            def forward(self, x):
+                return self.fc(x)
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.a = SubBlock()
+                self.b = SubBlock()
+
+            def forward(self, x):
+                return self.a(x) + self.b(x)
+
+        result = generate(Model())
+        # Should appear exactly once as a class definition
+        assert result.source.count("class SubBlock(nn.Module):") == 1
+        assert "self.a = SubBlock()" in result.source
+        assert "self.b = SubBlock()" in result.source
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+
+class TestDeepNesting:
+    """3 levels deep → helper classes emitted in topological order."""
+
+    def test_topological_order(self):
+        from torch2mlx.codegen import generate
+
+        class Inner(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(3, 3)
+
+            def forward(self, x):
+                return self.fc(x)
+
+        class Middle(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.inner = Inner()
+                self.norm = nn.LayerNorm(3)
+
+            def forward(self, x):
+                return self.norm(self.inner(x))
+
+        class Outer(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.mid = Middle()
+
+            def forward(self, x):
+                return self.mid(x)
+
+        result = generate(Outer())
+        source = result.source
+        # Inner must appear before Middle (dependency order)
+        inner_pos = source.index("class Inner(nn.Module):")
+        middle_pos = source.index("class Middle(nn.Module):")
+        outer_pos = source.index("class Outer(nn.Module):")
+        assert inner_pos < middle_pos < outer_pos
+        assert result.coverage == 1.0
+        ast.parse(source)
+
+
+class TestCoverageCountsLeaves:
+    """Coverage = mapped_leaves / total_leaves across entire tree."""
+
+    def test_nested_all_mapped(self):
+        from torch2mlx.codegen import generate
+
+        class Block(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc1 = nn.Linear(10, 10)
+                self.fc2 = nn.Linear(10, 10)
+
+            def forward(self, x):
+                return self.fc2(self.fc1(x))
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.block = Block()
+                self.head = nn.Linear(10, 1)
+
+            def forward(self, x):
+                return self.head(self.block(x))
+
+        result = generate(Model())
+        # 3 leaves total (fc1, fc2, head), all mapped
+        assert result.coverage == 1.0
+
+    def test_nested_partial_mapped(self):
+        from torch2mlx.codegen import generate
+
+        class Weird(nn.Module):
+            def forward(self, x):
+                return x
+
+        class Block(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(5, 5)
+                self.w = Weird()
+
+            def forward(self, x):
+                return self.w(self.fc(x))
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.block = Block()
+
+            def forward(self, x):
+                return self.block(x)
+
+        result = generate(Model())
+        # 2 leaves (fc is mapped, Weird is unmapped) → 50%
+        assert result.coverage == pytest.approx(0.5)
+
+
+# ── Edge case tests (skeptic review) ─────────────────────────────────────────
+
+
+class TestEmptyContainer:
+    """Empty ModuleList should contribute 0 leaves, not 1."""
+
+    def test_empty_modulelist_coverage(self):
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = nn.ModuleList([])
+                self.fc = nn.Linear(10, 5)
+
+            def forward(self, x):
+                return self.fc(x)
+
+        result = generate(Model())
+        # Only fc is a real leaf; empty ModuleList has 0 leaves
+        assert result.coverage == 1.0
+        assert result.unmapped == []
+        ast.parse(result.source)
+
+
+class TestModuleDict:
+    """ModuleDict with string keys → valid Python output."""
+
+    def test_uniform_dict(self):
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.heads = nn.ModuleDict(
+                    {
+                        "cls": nn.Linear(10, 2),
+                        "reg": nn.Linear(10, 4),
+                    }
+                )
+
+            def forward(self, x):
+                return self.heads["cls"](x)
+
+        result = generate(Model())
+        assert result.coverage == 1.0
+        assert "nn.Linear(" in result.source
+        ast.parse(result.source)
+
+    def test_mixed_dict(self):
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.parts = nn.ModuleDict(
+                    {
+                        "encoder": nn.Linear(10, 20),
+                        "act": nn.ReLU(),
+                    }
+                )
+
+            def forward(self, x):
+                return self.parts["act"](self.parts["encoder"](x))
+
+        result = generate(Model())
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+
+class TestContainerInContainer:
+    """ModuleList of Sequential — container-in-container recursion."""
+
+    def test_nested_containers(self):
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.towers = nn.ModuleList(
+                    [
+                        nn.Sequential(nn.Linear(8, 8), nn.ReLU()),
+                        nn.Sequential(nn.Linear(8, 8), nn.ReLU()),
+                    ]
+                )
+
+            def forward(self, x):
+                return sum(t(x) for t in self.towers)
+
+        result = generate(Model())
+        # 2 Sequentials × (Linear + ReLU) = 4 leaves, all mapped
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+
+class TestMixedContainerStatelessOnly:
+    """Sequential where all children are stateless skips."""
+
+    def test_all_stateless_children(self):
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.skips = nn.Sequential(nn.Identity(), nn.Dropout(0.1))
+                self.fc = nn.Linear(10, 5)
+
+            def forward(self, x):
+                return self.fc(self.skips(x))
+
+        result = generate(Model())
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+
+class TestMakeTodoCallHelper:
+    """Direct test of _make_todo_call_helper output content."""
+
+    def test_content(self):
+        from torch2mlx.codegen import _make_todo_call_helper
+
+        stub = _make_todo_call_helper("MyLayer", "forward(self, hidden, mask)")
+        assert "Translate MyLayer.forward(self, hidden, mask)" in stub
+        assert "MyLayer.forward() requires manual translation" in stub
+        assert "raise NotImplementedError" in stub
+        assert "def __call__" in stub

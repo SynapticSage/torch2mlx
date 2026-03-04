@@ -54,10 +54,19 @@ class GeneratedCode:
 
     source: str  # complete .py source
     class_name: str
-    coverage: float  # fraction of children with specs
+    coverage: float  # fraction of leaves with specs
     todos: list[str] = field(default_factory=list)
     unmapped: list[str] = field(default_factory=list)
     traced: bool = False  # True if fx trace succeeded for __call__
+
+
+@dataclass
+class _ClassDef:
+    """Helper class definition to emit before the main class."""
+
+    name: str  # e.g. "BertEmbeddings"
+    init_body: str  # indented init lines (joined with newlines)
+    forward_sig: str  # original forward() signature for TODO stub
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +380,15 @@ CONSTRUCTOR_SPECS: dict[str, ConstructorSpec | None] = {
     "BeitRelativePositionBias": None,
 }
 
+# Types whose children should be emitted as list items, not named attributes.
+_CONTAINER_TYPES = frozenset(
+    {
+        "ModuleList",
+        "Sequential",
+        "ModuleDict",
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # __init__ generation
@@ -631,6 +649,236 @@ def _get_forward_signature(module: Any) -> str:
         return "forward(self, x)"
 
 
+# ---------------------------------------------------------------------------
+# Recursive module tree walk
+# ---------------------------------------------------------------------------
+
+
+def _walk_module(
+    module: Any,
+    seen_classes: dict[str, _ClassDef],
+) -> tuple[list[str], int, int, list[str], list[str]]:
+    """Recursively walk module tree for __init__ generation.
+
+    Returns:
+        (init_lines, total_leaves, mapped_leaves, todos, unmapped)
+    """
+    init_lines: list[str] = []
+    total = 0
+    mapped = 0
+    todos: list[str] = []
+    unmapped: list[str] = []
+
+    for name, child in module.named_children():
+        safe_name = _sanitize_name(name)
+        child_type = type(child).__name__
+        spec = CONSTRUCTOR_SPECS.get(child_type)
+
+        if spec is not None:
+            # CASE 1: Known leaf with constructor spec
+            total += 1
+            try:
+                cstr = _format_constructor(child, spec)
+                init_lines.append(f"        self.{safe_name} = {cstr}")
+                mapped += 1
+            except (AttributeError, TypeError) as exc:
+                todos.append(f"self.{safe_name}: {child_type} — {exc}")
+                init_lines.append(
+                    f"        # TODO: self.{safe_name} = {spec.mlx_call}(...)  # {exc}"
+                )
+
+        elif child_type in CONSTRUCTOR_SPECS:
+            # CASE 2: In CONSTRUCTOR_SPECS with None value
+            has_children = bool(list(child.children()))
+            if child_type in _CONTAINER_TYPES:
+                if has_children:
+                    # 2a: List-like container with children → emit list syntax
+                    c_lines, c_total, c_mapped, c_todos, c_unmapped = _handle_container(
+                        safe_name, child, seen_classes
+                    )
+                    init_lines.extend(c_lines)
+                    total += c_total
+                    mapped += c_mapped
+                    todos.extend(c_todos)
+                    unmapped.extend(c_unmapped)
+                # else: empty container → 0 leaves, skip silently
+            elif has_children:
+                # 2b: Composite in CONSTRUCTOR_SPECS (e.g. TransformerEncoderLayer)
+                sub_lines, sub_total, sub_mapped, sub_todos, sub_unmapped = _walk_module(
+                    child, seen_classes
+                )
+                total += sub_total
+                mapped += sub_mapped
+                todos.extend(sub_todos)
+                unmapped.extend(sub_unmapped)
+                if child_type not in seen_classes:
+                    seen_classes[child_type] = _ClassDef(
+                        name=child_type,
+                        init_body="\n".join(sub_lines),
+                        forward_sig=_get_forward_signature(child),
+                    )
+                init_lines.append(f"        self.{safe_name} = {child_type}()")
+            else:
+                # 2c: Stateless skip (Identity, DropPath, RoPE, etc.)
+                total += 1
+                mapped += 1
+
+        else:
+            # CASE 3: Not in CONSTRUCTOR_SPECS at all
+            if list(child.named_children()):
+                # 3a: Composite — recurse, register helper class
+                sub_lines, sub_total, sub_mapped, sub_todos, sub_unmapped = _walk_module(
+                    child, seen_classes
+                )
+                total += sub_total
+                mapped += sub_mapped
+                todos.extend(sub_todos)
+                unmapped.extend(sub_unmapped)
+                if child_type not in seen_classes:
+                    seen_classes[child_type] = _ClassDef(
+                        name=child_type,
+                        init_body="\n".join(sub_lines),
+                        forward_sig=_get_forward_signature(child),
+                    )
+                init_lines.append(f"        self.{safe_name} = {child_type}()")
+            else:
+                # 3b: Truly unmapped leaf
+                total += 1
+                unmapped.append(child_type)
+                todos.append(f"self.{safe_name}: {child_type} has no constructor spec")
+                init_lines.append(
+                    f"        # TODO: self.{safe_name} = ...  # {child_type} — no constructor spec"
+                )
+
+    return init_lines, total, mapped, todos, unmapped
+
+
+def _handle_container(
+    safe_name: str,
+    container: Any,
+    seen_classes: dict[str, _ClassDef],
+) -> tuple[list[str], int, int, list[str], list[str]]:
+    """Handle ModuleList/Sequential/ModuleDict containers.
+
+    Uniform type → list comprehension.  Mixed types → individual items.
+
+    Returns:
+        (init_lines, total_leaves, mapped_leaves, todos, unmapped)
+    """
+    children = list(container.named_children())
+    if not children:
+        return [], 0, 0, [], []
+
+    child_types = [type(c).__name__ for _, c in children]
+    count = len(children)
+
+    # --- Uniform type → list comprehension ---
+    if len(set(child_types)) == 1:
+        item_type = child_types[0]
+        rep = children[0][1]
+
+        # Uniform leaf with constructor
+        spec = CONSTRUCTOR_SPECS.get(item_type)
+        if spec is not None:
+            try:
+                cstr = _format_constructor(rep, spec)
+                line = f"        self.{safe_name} = [{cstr} for _ in range({count})]"
+                return [line], count, count, [], []
+            except (AttributeError, TypeError):
+                pass  # fall through to mixed path
+
+        # Uniform composite/container with children → recurse representative
+        if list(rep.named_children()):
+            sub_lines, sub_total, sub_mapped, sub_todos, sub_unmapped = _walk_module(
+                rep, seen_classes
+            )
+            if item_type not in seen_classes:
+                seen_classes[item_type] = _ClassDef(
+                    name=item_type,
+                    init_body="\n".join(sub_lines),
+                    forward_sig=_get_forward_signature(rep),
+                )
+            line = f"        self.{safe_name} = [{item_type}() for _ in range({count})]"
+            return [line], sub_total * count, sub_mapped * count, sub_todos, sub_unmapped
+
+        # Uniform stateless skip / unmapped without children
+        if item_type in CONSTRUCTOR_SPECS:
+            return [], count, count, [], []
+        return (
+            [f"        # TODO: self.{safe_name} = [...]  # {count}x {item_type}"],
+            count,
+            0,
+            [f"{safe_name}: {count}x {item_type} has no constructor spec"],
+            [item_type],
+        )
+
+    # --- Mixed types → emit items individually ---
+    items: list[str] = []
+    total = 0
+    mapped_count = 0
+    todos: list[str] = []
+    unmapped_list: list[str] = []
+
+    for child_name, child in children:
+        child_type = type(child).__name__
+        spec = CONSTRUCTOR_SPECS.get(child_type)
+
+        if spec is not None:
+            # Leaf with constructor
+            total += 1
+            try:
+                items.append(_format_constructor(child, spec))
+                mapped_count += 1
+            except (AttributeError, TypeError) as exc:
+                items.append(f"None  # TODO: {child_type} — {exc}")
+                todos.append(f"{safe_name}[{child_name}]: {child_type} — {exc}")
+        elif list(child.named_children()):
+            # Composite with children — recurse
+            sub_lines, sub_total, sub_mapped, sub_todos, sub_unmapped = _walk_module(
+                child, seen_classes
+            )
+            total += sub_total
+            mapped_count += sub_mapped
+            todos.extend(sub_todos)
+            unmapped_list.extend(sub_unmapped)
+            if child_type not in seen_classes:
+                seen_classes[child_type] = _ClassDef(
+                    name=child_type,
+                    init_body="\n".join(sub_lines),
+                    forward_sig=_get_forward_signature(child),
+                )
+            items.append(f"{child_type}()")
+        elif child_type in CONSTRUCTOR_SPECS:
+            # Stateless skip (None spec, no children)
+            total += 1
+            mapped_count += 1
+        else:
+            # Unmapped leaf
+            total += 1
+            unmapped_list.append(child_type)
+            items.append(f"None  # TODO: {child_type}")
+            todos.append(f"{safe_name}[{child_name}]: {child_type} has no constructor spec")
+
+    if not items:
+        return [], total, mapped_count, todos, unmapped_list
+
+    init_lines = [f"        self.{safe_name} = ["]
+    for item in items:
+        init_lines.append(f"            {item},")
+    init_lines.append("        ]")
+
+    return init_lines, total, mapped_count, todos, unmapped_list
+
+
+def _make_todo_call_helper(type_name: str, forward_sig: str) -> str:
+    """Generate a TODO __call__ stub for a helper class."""
+    return (
+        "    def __call__(self, x: mx.array) -> mx.array:\n"
+        f"        # TODO: Translate {type_name}.{forward_sig}\n"
+        f'        raise NotImplementedError("{type_name}.forward() requires manual translation")'
+    )
+
+
 def generate(model: Any, class_name: str | None = None) -> GeneratedCode:
     """Generate MLX module source code from a torch.nn.Module.
 
@@ -652,61 +900,33 @@ def generate(model: Any, class_name: str | None = None) -> GeneratedCode:
         _build_fx_function_map()
 
     # Walk module tree for __init__
-    init_lines: list[str] = []
-    total_children = 0
-    mapped_children = 0
-    todos: list[str] = []
-    unmapped: list[str] = []
-
+    seen_classes: dict[str, _ClassDef] = {}
     children = list(model.named_children())
 
     # Root-as-leaf: bare modules like nn.Linear(10, 20) have no children
     if not children:
         root_type = type(model).__name__
         root_spec = CONSTRUCTOR_SPECS.get(root_type)
+        init_lines: list[str] = []
+        total_leaves = 0
+        mapped_leaves = 0
+        todos: list[str] = []
+        unmapped: list[str] = []
         if root_spec is not None:
-            total_children = 1
+            total_leaves = 1
             try:
                 constructor_str = _format_constructor(model, root_spec)
                 init_lines.append(f"        self.module = {constructor_str}")
-                mapped_children = 1
+                mapped_leaves = 1
             except (AttributeError, TypeError) as exc:
                 todos.append(f"self.module: {root_type} — {exc}")
                 init_lines.append(
                     f"        # TODO: self.module = {root_spec.mlx_call}(...)  # {exc}"
                 )
     else:
-        for name, child in children:
-            safe_name = _sanitize_name(name)
-            child_type = type(child).__name__
-            total_children += 1
+        init_lines, total_leaves, mapped_leaves, todos, unmapped = _walk_module(model, seen_classes)
 
-            spec = CONSTRUCTOR_SPECS.get(child_type)
-            if spec is None and child_type in CONSTRUCTOR_SPECS:
-                # Explicitly skipped type (containers, etc.)
-                mapped_children += 1
-                continue
-
-            if spec is None:
-                # Not in CONSTRUCTOR_SPECS at all
-                unmapped.append(child_type)
-                todos.append(f"self.{safe_name}: {child_type} has no constructor spec")
-                init_lines.append(
-                    f"        # TODO: self.{safe_name} = ...  # {child_type} — no constructor spec"
-                )
-                continue
-
-            try:
-                constructor_str = _format_constructor(child, spec)
-                init_lines.append(f"        self.{safe_name} = {constructor_str}")
-                mapped_children += 1
-            except (AttributeError, TypeError) as exc:
-                todos.append(f"self.{safe_name}: {child_type} — {exc}")
-                init_lines.append(
-                    f"        # TODO: self.{safe_name} = {spec.mlx_call}(...)  # {exc}"
-                )
-
-    coverage = mapped_children / total_children if total_children > 0 else 1.0
+    coverage = mapped_leaves / total_leaves if total_leaves > 0 else 1.0
 
     # Try fx trace for __call__
     traced = False
@@ -722,13 +942,27 @@ def generate(model: Any, class_name: str | None = None) -> GeneratedCode:
     else:
         call_method = _make_todo_call(model)
 
-    # Assemble source
+    # Assemble helper class source (post-order: deepest first)
+    helper_source = ""
+    for cls_def in seen_classes.values():
+        cls_init = cls_def.init_body if cls_def.init_body.strip() else "        pass"
+        fwd_stub = _make_todo_call_helper(cls_def.name, cls_def.forward_sig)
+        helper_source += (
+            f"class {cls_def.name}(nn.Module):\n"
+            f"    def __init__(self) -> None:\n"
+            f"        super().__init__()\n"
+            f"{cls_init}\n\n"
+            f"{fwd_stub}\n\n\n"
+        )
+
+    # Assemble main class source
     init_body = "\n".join(init_lines) if init_lines else "        pass"
     source = (
         f'"""MLX module generated by torch2mlx from {class_name}."""\n'
         f"from __future__ import annotations\n\n"
         f"import mlx.core as mx\n"
         f"import mlx.nn as nn\n\n\n"
+        f"{helper_source}"
         f"class {class_name}(nn.Module):\n"
         f"    def __init__(self) -> None:\n"
         f"        super().__init__()\n"
