@@ -48,6 +48,10 @@ EXPECTED_LAYERS = [
     ("TransformerEncoderLayer","None",              "identity"),
     ("TransformerDecoderLayer","None",              "identity"),
     ("NonDynamicallyQuantizableLinear","nn.Linear", "identity"),
+    # HuggingFace custom types
+    ("GELUActivation",    "nn.GELU",   "identity"),
+    ("NewGELUActivation", "nn.GELU",   "identity"),
+    ("Conv1D",            "nn.Linear", "linear_transposed"),
 ]
 
 EXPECTED_OPS = [

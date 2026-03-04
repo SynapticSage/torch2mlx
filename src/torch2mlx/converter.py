@@ -87,6 +87,47 @@ def convert_state_dict(
     return result
 
 
+def convert_state_dict_to_pytorch(
+    mlx_state: dict[str, NDArray],
+    module_map: dict[str, str],
+) -> dict[str, NDArray]:
+    """Reverse-convert MLX weight layouts back to PyTorch format.
+
+    Mirror of :func:`convert_state_dict` — applies reverse transpositions
+    so an MLX-format state dict can be loaded into a PyTorch model.
+
+    Args:
+        mlx_state: flat state dict with dot-separated keys and numpy arrays
+                   (MLX weight layout)
+        module_map: maps module prefix to transposition rule name
+                    (same map used for the forward conversion)
+
+    Returns:
+        New flat state dict with PyTorch-layout weight arrays
+    """
+    result: dict[str, NDArray] = {}
+    for key, array in mlx_state.items():
+        parts = key.split(".")
+        if parts[-1] != "weight":
+            result[key] = array
+            continue
+
+        prefix = ".".join(parts[:-1])
+        best_prefix: str | None = None
+        for candidate in module_map:
+            if prefix == candidate or prefix.startswith(candidate + "."):
+                if best_prefix is None or len(candidate) > len(best_prefix):
+                    best_prefix = candidate
+
+        if best_prefix is not None:
+            rule = module_map[best_prefix]
+            result[key] = weight_converter.convert_weight_reverse(array, rule)
+        else:
+            result[key] = array
+
+    return result
+
+
 def convert(
     torch_model_or_state: Any,
     output_path: str | Path,

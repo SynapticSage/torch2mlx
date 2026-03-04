@@ -7,7 +7,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from torch2mlx.converter import build_module_map, convert, convert_state_dict, load_converted
+from torch2mlx.converter import (
+    build_module_map,
+    convert,
+    convert_state_dict,
+    convert_state_dict_to_pytorch,
+    load_converted,
+)
 from torch2mlx.state_dict import save_safetensors
 
 try:
@@ -189,3 +195,71 @@ def test_convert_returns_path(tmp_path):
     result = convert(model, out)
     assert isinstance(result, Path)
     assert result.exists()
+
+
+# ---------------------------------------------------------------------------
+# convert_state_dict_to_pytorch (reverse conversion)
+# ---------------------------------------------------------------------------
+
+def test_reverse_conv2d_shape():
+    """Reverse conv2d: [O, H, W, I] -> [O, I, H, W]."""
+    mlx_arr = np.zeros((8, 5, 5, 3), dtype=np.float32)
+    flat = {"conv.weight": mlx_arr}
+    module_map = {"conv": "conv2d"}
+    result = convert_state_dict_to_pytorch(flat, module_map)
+    assert result["conv.weight"].shape == (8, 3, 5, 5)
+
+
+def test_reverse_bias_passthrough():
+    """Bias keys must NOT be transposed in reverse either."""
+    bias = np.zeros((16,), dtype=np.float32)
+    flat = {"conv.bias": bias}
+    module_map = {"conv": "conv2d"}
+    result = convert_state_dict_to_pytorch(flat, module_map)
+    np.testing.assert_array_equal(result["conv.bias"], bias)
+
+
+def test_reverse_no_prefix_match():
+    """Keys with no matching prefix pass through unchanged in reverse."""
+    arr = np.ones((4, 2), dtype=np.float32)
+    flat = {"unknown.weight": arr}
+    module_map = {"fc": "identity"}
+    result = convert_state_dict_to_pytorch(flat, module_map)
+    np.testing.assert_array_equal(result["unknown.weight"], arr)
+
+
+def test_state_dict_roundtrip_conv2d():
+    """Full state-dict-level roundtrip: PyTorch -> MLX -> PyTorch."""
+    rng = np.random.default_rng(42)
+    weight = rng.standard_normal((8, 3, 5, 5)).astype(np.float32)
+    bias = rng.standard_normal((8,)).astype(np.float32)
+    flat = {"conv.weight": weight, "conv.bias": bias}
+    module_map = {"conv": "conv2d"}
+
+    mlx_state = convert_state_dict(flat, module_map)
+    pytorch_state = convert_state_dict_to_pytorch(mlx_state, module_map)
+
+    np.testing.assert_allclose(pytorch_state["conv.weight"], weight, atol=1e-7)
+    np.testing.assert_array_equal(pytorch_state["conv.bias"], bias)
+
+
+def test_state_dict_roundtrip_mixed_layers():
+    """Roundtrip with multiple layer types in one state dict."""
+    rng = np.random.default_rng(123)
+    linear_w = rng.standard_normal((20, 10)).astype(np.float32)
+    conv_w = rng.standard_normal((16, 3, 5)).astype(np.float32)
+    bn_w = rng.standard_normal((16,)).astype(np.float32)
+
+    flat = {
+        "fc.weight": linear_w,
+        "conv.weight": conv_w,
+        "bn.weight": bn_w,
+    }
+    module_map = {"fc": "identity", "conv": "conv1d", "bn": "batch_norm"}
+
+    mlx_state = convert_state_dict(flat, module_map)
+    pytorch_state = convert_state_dict_to_pytorch(mlx_state, module_map)
+
+    np.testing.assert_allclose(pytorch_state["fc.weight"], linear_w, atol=1e-7)
+    np.testing.assert_allclose(pytorch_state["conv.weight"], conv_w, atol=1e-7)
+    np.testing.assert_allclose(pytorch_state["bn.weight"], bn_w, atol=1e-7)

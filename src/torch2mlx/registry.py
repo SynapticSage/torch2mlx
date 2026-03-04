@@ -81,6 +81,10 @@ def _populate() -> None:
         LayerMapping("TransformerDecoderLayer","None",          "identity",        "Decomposes into registered children"),
         # PyTorch internal Linear subclass (used in MultiheadAttention)
         LayerMapping("NonDynamicallyQuantizableLinear","nn.Linear","identity",     "Internal torch Linear subclass"),
+        # HuggingFace custom types
+        LayerMapping("GELUActivation",    "nn.GELU",    "identity",           "HF custom GELU wrapper"),
+        LayerMapping("NewGELUActivation", "nn.GELU",    "identity",           "HF GPT-2 GELU variant"),
+        LayerMapping("Conv1D",            "nn.Linear",  "linear_transposed",  "HF GPT-2 Linear with [in,out] weights"),
     ]
     for entry in _ENTRIES:
         register(entry)
