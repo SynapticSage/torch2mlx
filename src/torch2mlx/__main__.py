@@ -38,7 +38,9 @@ def _load_torch_checkpoint(path: Path) -> object:
 
 def _print_report(report: object) -> None:
     """Format and print a PortabilityReport."""
-    print(f"  Coverage:  {report.coverage:.1%} ({report.mapped_layers}/{report.total_layers} layers)")
+    print(
+        f"  Coverage:  {report.coverage:.1%} ({report.mapped_layers}/{report.total_layers} layers)"
+    )
     if report.unmapped_layers:
         print(f"  Unmapped:  {', '.join(report.unmapped_layers)}")
     if report.blockers:
@@ -58,12 +60,19 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("model_path", type=Path, help="Input model (.pt, .pth, or .safetensors)")
     parser.add_argument("output_dir", type=Path, help="Output directory for converted weights")
     parser.add_argument(
-        "--analyze-only", action="store_true",
+        "--analyze-only",
+        action="store_true",
         help="Run portability analysis only (requires torch, .pt/.pth input)",
     )
     parser.add_argument(
-        "--no-analyze", action="store_true",
+        "--no-analyze",
+        action="store_true",
         help="Skip pre-conversion analysis",
+    )
+    parser.add_argument(
+        "--codegen",
+        action="store_true",
+        help="Generate MLX module .py file alongside safetensors (requires torch, .pt/.pth input)",
     )
     args = parser.parse_args(argv)
 
@@ -84,7 +93,10 @@ def main(argv: list[str] | None = None) -> None:
     elif suffix == ".safetensors":
         data = sd.load_safetensors(model_path)
     else:
-        print(f"error: unsupported format {suffix!r} (expected .pt, .pth, or .safetensors)", file=sys.stderr)
+        print(
+            f"error: unsupported format {suffix!r} (expected .pt, .pth, or .safetensors)",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # Analyze-only mode
@@ -96,8 +108,12 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(1)
 
         import torch.nn as nn
+
         if not isinstance(data, nn.Module):
-            print("error: --analyze-only requires a .pt/.pth file containing a torch.nn.Module", file=sys.stderr)
+            print(
+                "error: --analyze-only requires a .pt/.pth file containing a torch.nn.Module",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
         print(f"torch2mlx: analyzing {model_path.name}\n")
@@ -124,6 +140,24 @@ def main(argv: list[str] | None = None) -> None:
     convert(data, output_file, analyze_first=False)  # We already analyzed above
     n_params = len(sd.load_safetensors(output_file))
     print(f"Converted {n_params} parameters -> {output_file}")
+
+    # Codegen: generate MLX module .py file
+    if args.codegen:
+        try:
+            import torch.nn as nn  # noqa: F811
+            from torch2mlx.codegen import generate_to_file
+
+            if not isinstance(data, nn.Module):
+                print(
+                    "warning: --codegen requires a .pt/.pth file containing a torch.nn.Module",
+                    file=sys.stderr,
+                )
+            else:
+                py_file = output_dir / f"{model_path.stem}.py"
+                generate_to_file(data, py_file)
+                print(f"Generated MLX module -> {py_file}")
+        except ImportError:
+            print("warning: torch is required for --codegen", file=sys.stderr)
 
 
 if __name__ == "__main__":

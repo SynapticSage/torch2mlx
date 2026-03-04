@@ -11,113 +11,121 @@ from torch2mlx.registry import LAYER_REGISTRY, LayerMapping
 # ── Expected contents ────────────────────────────────────────────────────────
 
 EXPECTED_LAYERS = [
-    ("Linear",            "nn.Linear",            "identity"),
-    ("Embedding",         "nn.Embedding",          "identity"),
-    ("LayerNorm",         "nn.LayerNorm",          "identity"),
-    ("RMSNorm",           "nn.RMSNorm",            "identity"),
-    ("Conv1d",            "nn.Conv1d",             "conv1d"),
-    ("Conv2d",            "nn.Conv2d",             "conv2d"),
-    ("ConvTranspose1d",   "nn.ConvTranspose1d",    "conv_transpose1d"),
-    ("ConvTranspose2d",   "nn.ConvTranspose2d",    "conv_transpose2d"),
-    ("BatchNorm1d",       "nn.BatchNorm",          "batch_norm"),
-    ("BatchNorm2d",       "nn.BatchNorm",          "batch_norm"),
-    ("MultiheadAttention","nn.MultiHeadAttention", "identity"),
-    ("GELU",              "nn.GELU",               "identity"),
-    ("ReLU",              "nn.ReLU",               "identity"),
-    ("SiLU",              "nn.SiLU",               "identity"),
-    ("Dropout",           "nn.Dropout",            "identity"),
-    ("ModuleList",        "None",                  "identity"),
-    ("Sequential",        "None",                  "identity"),
-    ("Tanh",              "nn.Tanh",               "identity"),
-    ("Sigmoid",           "nn.Sigmoid",            "identity"),
-    ("LeakyReLU",         "nn.LeakyReLU",          "identity"),
-    ("Softmax",           "nn.Softmax",            "identity"),
-    ("GroupNorm",         "nn.GroupNorm",           "identity"),
-    ("InstanceNorm1d",    "nn.InstanceNorm",        "identity"),
-    ("InstanceNorm2d",    "nn.InstanceNorm",        "identity"),
-    ("MaxPool1d",         "nn.MaxPool1d",           "identity"),
-    ("MaxPool2d",         "nn.MaxPool2d",           "identity"),
-    ("MaxPool3d",         "nn.MaxPool3d",           "identity"),
-    ("AvgPool1d",         "nn.AvgPool1d",           "identity"),
-    ("AvgPool2d",         "nn.AvgPool2d",           "identity"),
-    ("AvgPool3d",         "nn.AvgPool3d",           "identity"),
-    ("AdaptiveAvgPool2d", "None",                   "identity"),
-    ("Flatten",           "None",                   "identity"),
-    ("TransformerEncoder","None",                   "identity"),
-    ("TransformerDecoder","None",                   "identity"),
-    ("TransformerEncoderLayer","None",              "identity"),
-    ("TransformerDecoderLayer","None",              "identity"),
-    ("NonDynamicallyQuantizableLinear","nn.Linear", "identity"),
+    ("Linear", "nn.Linear", "identity"),
+    ("Embedding", "nn.Embedding", "identity"),
+    ("LayerNorm", "nn.LayerNorm", "identity"),
+    ("RMSNorm", "nn.RMSNorm", "identity"),
+    ("Conv1d", "nn.Conv1d", "conv1d"),
+    ("Conv2d", "nn.Conv2d", "conv2d"),
+    ("ConvTranspose1d", "nn.ConvTranspose1d", "conv_transpose1d"),
+    ("ConvTranspose2d", "nn.ConvTranspose2d", "conv_transpose2d"),
+    ("BatchNorm1d", "nn.BatchNorm", "batch_norm"),
+    ("BatchNorm2d", "nn.BatchNorm", "batch_norm"),
+    ("MultiheadAttention", "nn.MultiHeadAttention", "identity"),
+    ("GELU", "nn.GELU", "identity"),
+    ("ReLU", "nn.ReLU", "identity"),
+    ("SiLU", "nn.SiLU", "identity"),
+    ("Dropout", "nn.Dropout", "identity"),
+    ("ModuleList", "None", "identity"),
+    ("Sequential", "None", "identity"),
+    ("Tanh", "nn.Tanh", "identity"),
+    ("Sigmoid", "nn.Sigmoid", "identity"),
+    ("LeakyReLU", "nn.LeakyReLU", "identity"),
+    ("Softmax", "nn.Softmax", "identity"),
+    ("GroupNorm", "nn.GroupNorm", "identity"),
+    ("InstanceNorm1d", "nn.InstanceNorm", "identity"),
+    ("InstanceNorm2d", "nn.InstanceNorm", "identity"),
+    ("MaxPool1d", "nn.MaxPool1d", "identity"),
+    ("MaxPool2d", "nn.MaxPool2d", "identity"),
+    ("MaxPool3d", "nn.MaxPool3d", "identity"),
+    ("AvgPool1d", "nn.AvgPool1d", "identity"),
+    ("AvgPool2d", "nn.AvgPool2d", "identity"),
+    ("AvgPool3d", "nn.AvgPool3d", "identity"),
+    ("AdaptiveAvgPool2d", "None", "identity"),
+    ("Flatten", "None", "identity"),
+    ("TransformerEncoder", "None", "identity"),
+    ("TransformerDecoder", "None", "identity"),
+    ("TransformerEncoderLayer", "None", "identity"),
+    ("TransformerDecoderLayer", "None", "identity"),
+    ("NonDynamicallyQuantizableLinear", "nn.Linear", "identity"),
     # HuggingFace custom types
-    ("GELUActivation",    "nn.GELU",      "identity"),
-    ("NewGELUActivation", "nn.GELU",      "identity"),
-    ("QuickGELUActivation","nn.GELU",     "identity"),
-    ("Conv1D",            "nn.Linear",    "linear_transposed"),
-    ("T5LayerNorm",       "nn.RMSNorm",   "identity"),
-    ("WhisperPositionalEmbedding","nn.Embedding","identity"),
-    ("DebertaLayerNorm",  "nn.LayerNorm", "identity"),
-    ("BloomGelu",         "nn.GELU",      "identity"),
-    ("SiLUActivation",    "nn.SiLU",      "identity"),
-    ("Qwen2RMSNorm",      "nn.RMSNorm",   "identity"),
-    ("ConvNextLayerNorm", "nn.LayerNorm",  "identity"),
-    ("OPTLearnedPositionalEmbedding","nn.Embedding","identity"),
-    ("BartLearnedPositionalEmbedding","nn.Embedding","identity"),
-    ("BartScaledWordEmbedding","nn.Embedding","identity"),
-    ("Identity",          "None",          "identity"),
-    ("AdaptiveAvgPool1d", "None",          "identity"),
-    ("ModuleDict",        "None",          "identity"),
-    ("SwinDropPath",      "None",          "identity"),
-    ("Dinov2LayerScale",  "None",          "identity"),
-    ("Qwen2RotaryEmbedding","None",        "identity"),
-    ("Wav2Vec2SamePadLayer","None",        "identity"),
-    ("ParametrizedConv1d","nn.Conv1d",     "conv1d"),
-    ("ParametrizationList","None",         "identity"),
-    ("_WeightNorm",       "None",          "identity"),
-    ("FalconLinear",      "nn.Linear",     "identity"),
-    ("ReLU6",             "None",          "identity"),
-    ("GPTNeoXRotaryEmbedding","None",      "identity"),
-    ("FalconRotaryEmbedding","None",       "identity"),
-    ("PegasusSinusoidalPositionalEmbedding","nn.Embedding","identity"),
-    ("BeitDropPath",      "None",          "identity"),
-    ("SegformerDropPath",  "None",          "identity"),
-    ("BeitRelativePositionBias","None",    "identity"),
-    ("HubertSamePadLayer","None",          "identity"),
+    ("GELUActivation", "nn.GELU", "identity"),
+    ("NewGELUActivation", "nn.GELU", "identity"),
+    ("QuickGELUActivation", "nn.GELU", "identity"),
+    ("Conv1D", "nn.Linear", "linear_transposed"),
+    ("T5LayerNorm", "nn.RMSNorm", "identity"),
+    ("WhisperPositionalEmbedding", "nn.Embedding", "identity"),
+    ("DebertaLayerNorm", "nn.LayerNorm", "identity"),
+    ("BloomGelu", "nn.GELU", "identity"),
+    ("SiLUActivation", "nn.SiLU", "identity"),
+    ("Qwen2RMSNorm", "nn.RMSNorm", "identity"),
+    ("ConvNextLayerNorm", "nn.LayerNorm", "identity"),
+    ("OPTLearnedPositionalEmbedding", "nn.Embedding", "identity"),
+    ("BartLearnedPositionalEmbedding", "nn.Embedding", "identity"),
+    ("BartScaledWordEmbedding", "nn.Embedding", "identity"),
+    ("Identity", "None", "identity"),
+    ("AdaptiveAvgPool1d", "None", "identity"),
+    ("ModuleDict", "None", "identity"),
+    ("SwinDropPath", "None", "identity"),
+    ("Dinov2LayerScale", "None", "identity"),
+    ("Qwen2RotaryEmbedding", "None", "identity"),
+    ("Wav2Vec2SamePadLayer", "None", "identity"),
+    ("ParametrizedConv1d", "nn.Conv1d", "conv1d"),
+    ("ParametrizationList", "None", "identity"),
+    ("_WeightNorm", "None", "identity"),
+    ("FalconLinear", "nn.Linear", "identity"),
+    ("ReLU6", "None", "identity"),
+    ("GPTNeoXRotaryEmbedding", "None", "identity"),
+    ("FalconRotaryEmbedding", "None", "identity"),
+    ("PegasusSinusoidalPositionalEmbedding", "nn.Embedding", "identity"),
+    ("BeitDropPath", "None", "identity"),
+    ("SegformerDropPath", "None", "identity"),
+    ("BeitRelativePositionBias", "None", "identity"),
+    ("HubertSamePadLayer", "None", "identity"),
 ]
 
 EXPECTED_OPS = [
-    ("torch.cat",     "mx.concatenate", {"dim": "axis"}),
-    ("torch.stack",   "mx.stack",       {"dim": "axis"}),
-    ("F.softmax",     "mx.softmax",     {"dim": "axis"}),
-    ("x.view",        "mx.reshape",     {}),
-    ("x.permute",     "mx.transpose",   {}),
-    ("x.transpose",   "mx.swapaxes",    {}),
-    ("x.reshape",     "mx.reshape",     {}),
-    ("x.to",          "no_op",          {}),
-    ("x.contiguous",  "no_op",          {}),
-    ("torch.no_grad", "no_op",          {}),
-    ("F.relu",        "nn.relu",        {}),
-    ("F.gelu",        "nn.gelu",        {}),
-    ("F.silu",        "nn.silu",        {}),
-    ("torch.einsum",  "mx.einsum",     {}),
-    ("torch.matmul",  "mx.matmul",     {}),
-    ("x.unsqueeze",   "mx.expand_dims", {"dim": "axis"}),
-    ("x.squeeze",     "mx.squeeze",    {"dim": "axis"}),
-    ("x.flatten",     "mx.flatten",    {}),
-    ("torch.split",   "mx.split",      {"dim": "axis"}),
-    ("x.sum",         "mx.sum",        {"dim": "axis"}),
-    ("x.mean",        "mx.mean",       {"dim": "axis"}),
-    ("x.max",         "mx.max",        {"dim": "axis"}),
-    ("x.min",         "mx.min",        {"dim": "axis"}),
+    ("torch.cat", "mx.concatenate", {"dim": "axis"}),
+    ("torch.stack", "mx.stack", {"dim": "axis"}),
+    ("F.softmax", "mx.softmax", {"dim": "axis"}),
+    ("x.view", "mx.reshape", {}),
+    ("x.permute", "mx.transpose", {}),
+    ("x.transpose", "mx.swapaxes", {}),
+    ("x.reshape", "mx.reshape", {}),
+    ("x.to", "no_op", {}),
+    ("x.contiguous", "no_op", {}),
+    ("torch.no_grad", "no_op", {}),
+    ("F.relu", "nn.relu", {}),
+    ("F.gelu", "nn.gelu", {}),
+    ("F.silu", "nn.silu", {}),
+    ("torch.einsum", "mx.einsum", {}),
+    ("torch.matmul", "mx.matmul", {}),
+    ("x.unsqueeze", "mx.expand_dims", {"dim": "axis"}),
+    ("x.squeeze", "mx.squeeze", {"dim": "axis"}),
+    ("x.flatten", "mx.flatten", {}),
+    ("torch.split", "mx.split", {"dim": "axis"}),
+    ("x.sum", "mx.sum", {"dim": "axis"}),
+    ("x.mean", "mx.mean", {"dim": "axis"}),
+    ("x.max", "mx.max", {"dim": "axis"}),
+    ("x.min", "mx.min", {"dim": "axis"}),
     ("F.cross_entropy", "nn.losses.cross_entropy", {}),
-    ("F.mse_loss",      "nn.losses.mse_loss",      {}),
-    ("torch.zeros",   "mx.zeros",         {"dtype": "dtype"}),
-    ("torch.ones",    "mx.ones",          {"dtype": "dtype"}),
-    ("torch.randn",   "mx.random.normal", {}),
-    ("x.chunk",       "mx.split",         {"dim": "axis"}),
-    ("torch.chunk",   "mx.split",         {"dim": "axis"}),
+    ("F.mse_loss", "nn.losses.mse_loss", {}),
+    ("torch.zeros", "mx.zeros", {"dtype": "dtype"}),
+    ("torch.ones", "mx.ones", {"dtype": "dtype"}),
+    ("torch.randn", "mx.random.normal", {}),
+    ("x.chunk", "mx.split", {"dim": "axis"}),
+    ("torch.chunk", "mx.split", {"dim": "axis"}),
+    # Python operators (for torch.fx graph translation)
+    ("operator.add", "mx.add", {}),
+    ("operator.mul", "mx.multiply", {}),
+    ("operator.sub", "mx.subtract", {}),
+    ("operator.truediv", "mx.divide", {}),
+    ("operator.floordiv", "mx.floor_divide", {}),
+    ("operator.getitem", "operator.getitem", {}),
 ]
 
 # ── LAYER_REGISTRY tests ─────────────────────────────────────────────────────
+
 
 @pytest.mark.parametrize("torch_name,mlx_name,transposition", EXPECTED_LAYERS)
 def test_layer_mapping_present(torch_name, mlx_name, transposition):
@@ -153,6 +161,7 @@ def test_registry_size():
 
 
 # ── OP_REGISTRY tests ────────────────────────────────────────────────────────
+
 
 @pytest.mark.parametrize("torch_op,mlx_op,param_renames", EXPECTED_OPS)
 def test_op_mapping_present(torch_op, mlx_op, param_renames):
@@ -196,7 +205,7 @@ mlx_core = pytest.importorskip("mlx.core", reason="mlx not installed")
 mlx_nn = pytest.importorskip("mlx.nn", reason="mlx not installed")
 
 SKIP_LAYER_NAMES = {"None"}
-SKIP_OP_NAMES = {"no_op"}
+SKIP_OP_NAMES = {"no_op", "operator.getitem"}
 
 
 def _resolve_mlx_attr(dotted_name: str):
@@ -216,16 +225,10 @@ def _resolve_mlx_attr(dotted_name: str):
 
 
 _LAYER_NAMES_TO_CHECK = [
-    m.mlx_name
-    for m in LAYER_REGISTRY.values()
-    if m.mlx_name not in SKIP_LAYER_NAMES
+    m.mlx_name for m in LAYER_REGISTRY.values() if m.mlx_name not in SKIP_LAYER_NAMES
 ]
 
-_OP_NAMES_TO_CHECK = [
-    m.mlx_op
-    for m in OP_REGISTRY.values()
-    if m.mlx_op not in SKIP_OP_NAMES
-]
+_OP_NAMES_TO_CHECK = [m.mlx_op for m in OP_REGISTRY.values() if m.mlx_op not in SKIP_OP_NAMES]
 
 
 @pytest.mark.parametrize("mlx_name", sorted(set(_LAYER_NAMES_TO_CHECK)))

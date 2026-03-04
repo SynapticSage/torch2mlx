@@ -23,6 +23,7 @@ REVERSE_TRANSPOSITION_RULES: dict[str, callable] = {}
 
 # -- Forward rules (PyTorch → MLX) -------------------------------------------
 
+
 def _identity(arr: NDArray) -> NDArray:
     return arr
 
@@ -54,6 +55,7 @@ def _linear_transposed(arr: NDArray) -> NDArray:
 
 # -- Reverse rules (MLX → PyTorch) -------------------------------------------
 
+
 def _rev_conv1d(arr: NDArray) -> NDArray:
     # [O, K, I] -> [O, I, K]  (swapaxes is its own inverse)
     return np.swapaxes(arr, 1, 2)
@@ -80,6 +82,7 @@ def _rev_linear_transposed(arr: NDArray) -> NDArray:
 
 
 # -- Populate both tables ----------------------------------------------------
+
 
 def _populate() -> None:
     TRANSPOSITION_RULES["identity"] = _identity

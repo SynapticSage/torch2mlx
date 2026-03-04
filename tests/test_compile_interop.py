@@ -25,9 +25,7 @@ requires_torch = pytest.mark.skipif(not HAS_TORCH, reason="torch not installed")
 # torch.compile requires Python 3.8+ and torch >= 2.0
 HAS_COMPILE = HAS_TORCH and hasattr(torch, "compile")
 
-requires_compile = pytest.mark.skipif(
-    not HAS_COMPILE, reason="torch.compile not available"
-)
+requires_compile = pytest.mark.skipif(not HAS_COMPILE, reason="torch.compile not available")
 
 
 def _make_simple_model():
@@ -94,7 +92,8 @@ def test_compile_weights_match_original(tmp_path):
     for key_path, orig_arr in _leaf_items(orig):
         comp_arr = _nested_get(inner, key_path)
         np.testing.assert_array_equal(
-            orig_arr, comp_arr,
+            orig_arr,
+            comp_arr,
             err_msg=f"Weight mismatch at {'.'.join(key_path)}",
         )
 
@@ -112,10 +111,7 @@ def test_compile_named_modules_class_names(tmp_path):
     model = _make_simple_model()
     compiled = torch.compile(model)
 
-    named = [
-        (name, type(m).__name__)
-        for name, m in compiled.named_modules()
-    ]
+    named = [(name, type(m).__name__) for name, m in compiled.named_modules()]
 
     module_map = build_module_map(named)
 

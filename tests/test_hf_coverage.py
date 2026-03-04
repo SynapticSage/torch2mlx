@@ -90,6 +90,5 @@ def test_hf_model_full_coverage(cls_name: str, checkpoint: str) -> None:
     """Analyzer reports 100% coverage on this HuggingFace architecture."""
     coverage, total, unmapped = _analyze_hf(cls_name, checkpoint)
     assert coverage == 1.0, (
-        f"{cls_name} coverage {coverage:.1%} ({total} layers), "
-        f"unmapped: {unmapped}"
+        f"{cls_name} coverage {coverage:.1%} ({total} layers), unmapped: {unmapped}"
     )

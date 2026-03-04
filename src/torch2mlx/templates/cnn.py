@@ -57,7 +57,9 @@ if HAS_MLX:
                     f"activation must be one of {list(_ACTIVATIONS)}, got {activation!r}"
                 )
 
-            self.conv = _CONV[conv_type](in_channels, out_channels, kernel_size, stride=stride, padding=padding)
+            self.conv = _CONV[conv_type](
+                in_channels, out_channels, kernel_size, stride=stride, padding=padding
+            )
             self.activation_fn = _ACTIVATIONS[activation]()
 
         def __call__(self, x: mx.array) -> mx.array:

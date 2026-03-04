@@ -28,6 +28,7 @@ src/torch2mlx/
 ├── state_dict.py        # Flat keys ↔ nested dict conversion
 ├── op_mapping.py        # torch.cat → mx.concatenate etc.
 ├── analyzer.py          # Portability report: % convertible, blockers
+├── codegen.py           # MLX module .py generation (init + fx graph __call__)
 ├── converter.py         # End-to-end orchestration
 └── templates/           # Hand-written MLX module implementations
     ├── transformer.py   # Attention + FFN + LayerNorm
@@ -42,6 +43,7 @@ registry.py, op_mapping.py          ← foundation, no internal deps
     ↓
 weight_converter.py, state_dict.py  ← depend on registry (layer types)
 analyzer.py                         ← depends on registry + op_mapping
+codegen.py                          ← depends on registry + op_mapping
 templates/*                         ← depend on registry
     ↓
 converter.py                        ← wires everything together

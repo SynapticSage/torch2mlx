@@ -19,6 +19,7 @@ from torch2mlx import analyzer, registry, state_dict, weight_converter
 
 try:
     import torch.nn as nn
+
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -171,10 +172,7 @@ def convert(
         # models (e.g., nn.Conv1d directly) get their transpositions applied.
         # Root class is usually custom and absent from registry, so it's a no-op
         # for multi-layer models.
-        named_modules = [
-            (name, type(m).__name__)
-            for name, m in model.named_modules()
-        ]
+        named_modules = [(name, type(m).__name__) for name, m in model.named_modules()]
         # numpy-only from here on
         flat_weights = {k: v.detach().numpy() for k, v in model.state_dict().items()}
         module_map = build_module_map(named_modules)
