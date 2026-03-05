@@ -20,7 +20,7 @@ from pathlib import Path
 __version__ = "0.1.0"
 
 from torch2mlx.analyzer import PortabilityReport, analyze
-from torch2mlx.codegen import GeneratedCode, generate
+from torch2mlx.codegen import Confidence, GeneratedCode, RewriteResult, generate
 from torch2mlx.converter import convert, load_converted
 
 
@@ -53,4 +53,6 @@ __all__ = [
     "generate",
     "PortabilityReport",
     "GeneratedCode",
+    "Confidence",
+    "RewriteResult",
 ]

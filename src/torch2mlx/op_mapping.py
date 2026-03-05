@@ -95,6 +95,33 @@ def _populate() -> None:
         OpMapping("torch.randn", "mx.random.normal", {}, "Different seeding semantics"),
         OpMapping("x.chunk", "mx.split", {"dim": "axis"}, "Method form of chunk"),
         OpMapping("torch.chunk", "mx.split", {"dim": "axis"}, "Functional form of chunk"),
+        # Tensor creation (additional)
+        OpMapping("torch.arange", "mx.arange", {}, ""),
+        OpMapping("torch.full", "mx.full", {}, ""),
+        OpMapping("torch.zeros_like", "mx.zeros_like", {}, ""),
+        OpMapping("torch.ones_like", "mx.ones_like", {}, ""),
+        OpMapping("torch.tensor", "mx.array", {}, "torch.tensor → mx.array"),
+        OpMapping("torch.finfo", "mx.finfo", {}, "Float type info"),
+        OpMapping("torch.iinfo", "mx.iinfo", {}, "Integer type info"),
+        # Math functions
+        OpMapping("torch.where", "mx.where", {}, ""),
+        OpMapping("torch.clamp", "mx.clip", {"min": "a_min", "max": "a_max"}, ""),
+        OpMapping("torch.abs", "mx.abs", {}, ""),
+        OpMapping("torch.sqrt", "mx.sqrt", {}, ""),
+        OpMapping("torch.pow", "mx.power", {}, ""),
+        OpMapping("torch.log", "mx.log", {}, ""),
+        OpMapping("torch.exp", "mx.exp", {}, ""),
+        OpMapping("torch.tanh", "mx.tanh", {}, ""),
+        # Tensor methods (additional)
+        OpMapping("x.expand", "mx.broadcast_to", {}, "method -> function"),
+        OpMapping("x.clamp", "mx.clip", {"min": "a_min", "max": "a_max"}, "method -> function"),
+        OpMapping("x.abs", "mx.abs", {}, "method -> function"),
+        OpMapping("x.sqrt", "mx.sqrt", {}, "method -> function"),
+        OpMapping("x.repeat", "mx.tile", {}, "method -> function"),
+        OpMapping("x.split", "mx.split", {"dim": "axis"}, "method -> function"),
+        OpMapping("x.matmul", "mx.matmul", {}, "method -> function"),
+        # F.* functions (additional)
+        OpMapping("F.dropout", "no_op", {}, "No-op at eval time"),
         # Python operators (emitted by torch.fx for arithmetic expressions)
         OpMapping("operator.add", "mx.add", {}, "Python + operator"),
         OpMapping("operator.mul", "mx.multiply", {}, "Python * operator"),

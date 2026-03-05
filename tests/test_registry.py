@@ -115,6 +115,33 @@ EXPECTED_OPS = [
     ("torch.randn", "mx.random.normal", {}),
     ("x.chunk", "mx.split", {"dim": "axis"}),
     ("torch.chunk", "mx.split", {"dim": "axis"}),
+    # Tensor creation (additional)
+    ("torch.arange", "mx.arange", {}),
+    ("torch.full", "mx.full", {}),
+    ("torch.zeros_like", "mx.zeros_like", {}),
+    ("torch.ones_like", "mx.ones_like", {}),
+    ("torch.tensor", "mx.array", {}),
+    ("torch.finfo", "mx.finfo", {}),
+    ("torch.iinfo", "mx.iinfo", {}),
+    # Math functions
+    ("torch.where", "mx.where", {}),
+    ("torch.clamp", "mx.clip", {"min": "a_min", "max": "a_max"}),
+    ("torch.abs", "mx.abs", {}),
+    ("torch.sqrt", "mx.sqrt", {}),
+    ("torch.pow", "mx.power", {}),
+    ("torch.log", "mx.log", {}),
+    ("torch.exp", "mx.exp", {}),
+    ("torch.tanh", "mx.tanh", {}),
+    # Tensor methods (additional)
+    ("x.expand", "mx.broadcast_to", {}),
+    ("x.clamp", "mx.clip", {"min": "a_min", "max": "a_max"}),
+    ("x.abs", "mx.abs", {}),
+    ("x.sqrt", "mx.sqrt", {}),
+    ("x.repeat", "mx.tile", {}),
+    ("x.split", "mx.split", {"dim": "axis"}),
+    ("x.matmul", "mx.matmul", {}),
+    # F.* (additional)
+    ("F.dropout", "no_op", {}),
     # Python operators (for torch.fx graph translation)
     ("operator.add", "mx.add", {}),
     ("operator.mul", "mx.multiply", {}),

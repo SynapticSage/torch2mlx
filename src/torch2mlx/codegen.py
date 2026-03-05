@@ -9,13 +9,16 @@ Uses registry.py for layer mapping and op_mapping.py for operator translation.
 
 from __future__ import annotations
 
+import ast as _ast
+import enum
 import inspect
 import operator
+import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from torch2mlx.op_mapping import OP_REGISTRY
+from torch2mlx.op_mapping import DTYPE_REGISTRY, OP_REGISTRY
 
 try:
     import torch
@@ -48,6 +51,31 @@ class ConstructorSpec:
     args: tuple[ArgSpec, ...]
 
 
+class Confidence(enum.Enum):
+    """Confidence level for AST-rewritten code."""
+
+    MECHANICAL = "mechanical"  # Pure syntactic rename, high confidence
+    NEEDS_REVIEW = "needs_review"  # Ambiguous or approximate translation
+    BLOCKER = "blocker"  # Known incompatibility, manual fix needed
+
+
+_CONFIDENCE_ORDER = {
+    Confidence.MECHANICAL: 0,
+    Confidence.NEEDS_REVIEW: 1,
+    Confidence.BLOCKER: 2,
+}
+
+
+@dataclass
+class RewriteResult:
+    """Result of AST-rewriting a forward() method."""
+
+    source: str  # Rewritten __call__ body
+    confidence: Confidence  # Overall confidence
+    annotations: list[tuple[int, Confidence, str]]  # (line, level, note)
+    unmapped_calls: list[str]  # Torch APIs not in OP_REGISTRY
+
+
 @dataclass
 class GeneratedCode:
     """Result of code generation."""
@@ -58,6 +86,8 @@ class GeneratedCode:
     todos: list[str] = field(default_factory=list)
     unmapped: list[str] = field(default_factory=list)
     traced: bool = False  # True if fx trace succeeded for __call__
+    ast_rewritten: bool = False  # True if AST rewrite succeeded for __call__
+    call_confidence: str = "todo"  # "mechanical" | "needs_review" | "todo"
 
 
 @dataclass
@@ -67,6 +97,8 @@ class _ClassDef:
     name: str  # e.g. "BertEmbeddings"
     init_body: str  # indented init lines (joined with newlines)
     forward_sig: str  # original forward() signature for TODO stub
+    call_body: str | None = None  # AST-rewritten __call__, None → TODO stub
+    call_confidence: str = "todo"  # "mechanical" | "needs_review" | "todo"
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +482,13 @@ _FX_METHOD_MAP: dict[str, str] = {
     "max": "x.max",
     "min": "x.min",
     "chunk": "x.chunk",
+    "expand": "x.expand",
+    "clamp": "x.clamp",
+    "abs": "x.abs",
+    "sqrt": "x.sqrt",
+    "repeat": "x.repeat",
+    "split": "x.split",
+    "matmul": "x.matmul",
 }
 
 
@@ -471,6 +510,18 @@ def _build_fx_function_map() -> None:
         torch.zeros: "torch.zeros",
         torch.ones: "torch.ones",
         torch.randn: "torch.randn",
+        torch.arange: "torch.arange",
+        torch.full: "torch.full",
+        torch.zeros_like: "torch.zeros_like",
+        torch.ones_like: "torch.ones_like",
+        torch.where: "torch.where",
+        torch.clamp: "torch.clamp",
+        torch.abs: "torch.abs",
+        torch.sqrt: "torch.sqrt",
+        torch.pow: "torch.pow",
+        torch.log: "torch.log",
+        torch.exp: "torch.exp",
+        torch.tanh: "torch.tanh",
     }
     # F.* functions
     _f_funcs = {
@@ -480,6 +531,7 @@ def _build_fx_function_map() -> None:
         F.softmax: "F.softmax",
         F.cross_entropy: "F.cross_entropy",
         F.mse_loss: "F.mse_loss",
+        F.dropout: "F.dropout",
     }
     # Python operators
     _op_funcs = {
@@ -632,6 +684,380 @@ def _translate_graph(graph_module: Any) -> tuple[str, list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# AST-based forward() rewriting
+# ---------------------------------------------------------------------------
+
+# Methods that are no-ops in MLX (unified memory, no contiguity concept)
+_NOOP_METHODS = frozenset({"contiguous", "to", "cuda", "cpu", "detach", "requires_grad_"})
+
+# Tensor cast methods → MLX dtype attribute names
+_CAST_DTYPES: dict[str, str] = {
+    "float": "float32",
+    "half": "float16",
+    "double": "float32",  # MLX lacks float64; downcast
+    "int": "int32",
+    "long": "int64",
+    "bool": "bool_",
+    "bfloat16": "bfloat16",
+}
+
+
+def _is_self_access(node: _ast.expr) -> bool:
+    """Check if an AST node is a `self.xxx` attribute chain."""
+    while isinstance(node, _ast.Attribute):
+        node = node.value
+    return isinstance(node, _ast.Name) and node.id == "self"
+
+
+def _make_mx_attr(parts: str) -> _ast.expr:
+    """Build an AST node for a dotted name like 'mx.reshape' or 'nn.relu'."""
+    segs = parts.split(".")
+    node: _ast.expr = _ast.Name(id=segs[0], ctx=_ast.Load())
+    for seg in segs[1:]:
+        node = _ast.Attribute(value=node, attr=seg, ctx=_ast.Load())
+    return node
+
+
+class _TorchToMLXRewriter(_ast.NodeTransformer):
+    """Rewrite a torch forward() AST into an MLX __call__() AST."""
+
+    def __init__(self) -> None:
+        self.annotations: list[tuple[int, Confidence, str]] = []
+        self.unmapped_calls: list[str] = []
+        self._confidence = Confidence.MECHANICAL
+
+    def _lower_confidence(self, level: Confidence) -> None:
+        if _CONFIDENCE_ORDER[level] > _CONFIDENCE_ORDER[self._confidence]:
+            self._confidence = level
+
+    def _annotate(self, lineno: int, level: Confidence, note: str) -> None:
+        self.annotations.append((lineno, level, note))
+        self._lower_confidence(level)
+
+    # --- FunctionDef: forward → __call__ ---
+
+    def visit_FunctionDef(self, node: _ast.FunctionDef) -> _ast.FunctionDef:
+        if node.name == "forward":
+            node.name = "__call__"
+            node.decorator_list = []  # Strip decorators
+        # Convert type annotations
+        if node.returns:
+            node.returns = self._convert_annotation(node.returns)
+        for arg in node.args.args:
+            if arg.annotation:
+                arg.annotation = self._convert_annotation(arg.annotation)
+        self.generic_visit(node)
+        return node
+
+    def _convert_annotation(self, node: _ast.expr) -> _ast.expr:
+        """torch.Tensor / torch.*Tensor → mx.array."""
+        if isinstance(node, _ast.Attribute):
+            if isinstance(node.value, _ast.Name) and node.value.id == "torch":
+                if "Tensor" in node.attr:
+                    return _ast.Attribute(
+                        value=_ast.Name(id="mx", ctx=_ast.Load()),
+                        attr="array",
+                        ctx=_ast.Load(),
+                    )
+        # Optional[torch.Tensor] → Optional[mx.array]
+        if isinstance(node, _ast.Subscript):
+            node.slice = self._convert_annotation(node.slice)
+            return node
+        # String annotations containing "Tensor"
+        if isinstance(node, _ast.Constant) and isinstance(node.value, str):
+            if "Tensor" in node.value:
+                return _ast.Constant(value="mx.array")
+        return node
+
+    # --- Attribute: torch.float32 → mx.float32, no-op removal ---
+
+    def visit_Attribute(self, node: _ast.Attribute) -> _ast.expr:
+        self.generic_visit(node)
+        # torch.float32 → mx.float32 (dtype constants)
+        if isinstance(node.value, _ast.Name) and node.value.id == "torch":
+            dtype_key = f"torch.{node.attr}"
+            if dtype_key in DTYPE_REGISTRY:
+                mapping = DTYPE_REGISTRY[dtype_key]
+                if mapping.mlx_dtype != "unsupported":
+                    mlx_attr = mapping.mlx_dtype.replace("mx.", "")
+                    return _ast.Attribute(
+                        value=_ast.Name(id="mx", ctx=_ast.Load()),
+                        attr=mlx_attr,
+                        ctx=node.ctx,
+                    )
+        return node
+
+    # --- Call: the main rewriting engine ---
+
+    def visit_Call(self, node: _ast.Call) -> _ast.expr:
+        # Visit children first so nested transforms resolve
+        self.generic_visit(node)
+
+        func = node.func
+        if not isinstance(func, _ast.Attribute):
+            return node
+
+        attr_name = func.attr
+
+        # self.xxx(args) → leave alone (submodule calls)
+        if _is_self_access(func.value):
+            # Special case: self.xxx.forward(args) → self.xxx(args)
+            if attr_name == "forward" and isinstance(func.value, _ast.Attribute):
+                return _ast.Call(func=func.value, args=node.args, keywords=node.keywords)
+            return node
+
+        # super().forward(args) → super().__call__(args)
+        if attr_name == "forward" and self._is_super_call(func.value):
+            func.attr = "__call__"
+            return node
+
+        # torch.func(args)
+        if isinstance(func.value, _ast.Name) and func.value.id == "torch":
+            return self._rewrite_torch_func(node, attr_name)
+
+        # F.func(args) or torch.nn.functional.func(args)
+        if isinstance(func.value, _ast.Name) and func.value.id == "F":
+            return self._rewrite_f_func(node, attr_name)
+
+        # x.method(args) — tensor methods
+        return self._rewrite_method(node, attr_name)
+
+    def _is_super_call(self, node: _ast.expr) -> bool:
+        """Check if node is a super() call."""
+        return (
+            isinstance(node, _ast.Call)
+            and isinstance(node.func, _ast.Name)
+            and node.func.id == "super"
+        )
+
+    # --- torch.func() rewriting ---
+
+    def _rewrite_torch_func(self, node: _ast.Call, func_name: str) -> _ast.expr:
+        reg_key = f"torch.{func_name}"
+        mapping = OP_REGISTRY.get(reg_key)
+        if mapping is None:
+            self.unmapped_calls.append(reg_key)
+            self._lower_confidence(Confidence.NEEDS_REVIEW)
+            return node
+
+        if mapping.mlx_op == "no_op":
+            return node.args[0] if node.args else node
+
+        return _ast.Call(
+            func=_make_mx_attr(mapping.mlx_op),
+            args=list(node.args),
+            keywords=self._rename_kwargs(node.keywords, mapping.param_renames),
+        )
+
+    # --- F.func() rewriting ---
+
+    def _rewrite_f_func(self, node: _ast.Call, func_name: str) -> _ast.expr:
+        reg_key = f"F.{func_name}"
+        mapping = OP_REGISTRY.get(reg_key)
+        if mapping is None:
+            self.unmapped_calls.append(reg_key)
+            self._lower_confidence(Confidence.NEEDS_REVIEW)
+            return node
+
+        if mapping.mlx_op == "no_op":
+            return node.args[0] if node.args else node
+
+        return _ast.Call(
+            func=_make_mx_attr(mapping.mlx_op),
+            args=list(node.args),
+            keywords=self._rename_kwargs(node.keywords, mapping.param_renames),
+        )
+
+    # --- x.method() rewriting ---
+
+    def _rewrite_method(self, node: _ast.Call, method_name: str) -> _ast.expr:
+        receiver = node.func.value
+
+        # Special methods
+        if method_name == "size":
+            return self._handle_size(node)
+        if method_name == "dim":
+            return self._handle_dim(node)
+        if method_name == "numel":
+            return _ast.Attribute(value=receiver, attr="size", ctx=_ast.Load())
+        if method_name == "type_as":
+            return self._handle_type_as(node)
+        if method_name in _CAST_DTYPES:
+            return self._handle_cast(node, method_name)
+        if method_name in _NOOP_METHODS:
+            return self._handle_noop_method(node)
+        if method_name == "forward":
+            # obj.forward(args) → obj(args)
+            return _ast.Call(func=receiver, args=node.args, keywords=node.keywords)
+        if method_name in ("masked_fill", "masked_fill_"):
+            return self._handle_masked_fill(node)
+
+        # Registry-mapped methods
+        reg_key = _FX_METHOD_MAP.get(method_name)
+        if reg_key is None:
+            # Not a known tensor method — leave as-is (could be dict/list method)
+            return node
+
+        mapping = OP_REGISTRY.get(reg_key)
+        if mapping is None:
+            self.unmapped_calls.append(method_name)
+            self._lower_confidence(Confidence.NEEDS_REVIEW)
+            return node
+
+        if mapping.mlx_op == "no_op":
+            return receiver
+
+        # Method → function: prepend receiver as first arg
+        return _ast.Call(
+            func=_make_mx_attr(mapping.mlx_op),
+            args=[receiver] + list(node.args),
+            keywords=self._rename_kwargs(node.keywords, mapping.param_renames),
+        )
+
+    # --- Special method handlers ---
+
+    def _handle_size(self, node: _ast.Call) -> _ast.expr:
+        """x.size() → x.shape, x.size(dim) → x.shape[dim]."""
+        receiver = node.func.value
+        if not node.args:
+            return _ast.Attribute(value=receiver, attr="shape", ctx=_ast.Load())
+        return _ast.Subscript(
+            value=_ast.Attribute(value=receiver, attr="shape", ctx=_ast.Load()),
+            slice=node.args[0],
+            ctx=_ast.Load(),
+        )
+
+    def _handle_dim(self, node: _ast.Call) -> _ast.expr:
+        """x.dim() → len(x.shape)."""
+        receiver = node.func.value
+        return _ast.Call(
+            func=_ast.Name(id="len", ctx=_ast.Load()),
+            args=[_ast.Attribute(value=receiver, attr="shape", ctx=_ast.Load())],
+            keywords=[],
+        )
+
+    def _handle_type_as(self, node: _ast.Call) -> _ast.expr:
+        """x.type_as(y) → x.astype(y.dtype)."""
+        receiver = node.func.value
+        if node.args:
+            other = node.args[0]
+            return _ast.Call(
+                func=_ast.Attribute(value=receiver, attr="astype", ctx=_ast.Load()),
+                args=[_ast.Attribute(value=other, attr="dtype", ctx=_ast.Load())],
+                keywords=[],
+            )
+        return node
+
+    def _handle_cast(self, node: _ast.Call, method_name: str) -> _ast.expr:
+        """x.float() → x.astype(mx.float32), x.half() → x.astype(mx.float16)."""
+        receiver = node.func.value
+        mlx_dtype = _CAST_DTYPES[method_name]
+        return _ast.Call(
+            func=_ast.Attribute(value=receiver, attr="astype", ctx=_ast.Load()),
+            args=[_make_mx_attr(f"mx.{mlx_dtype}")],
+            keywords=[],
+        )
+
+    def _handle_noop_method(self, node: _ast.Call) -> _ast.expr:
+        """x.contiguous() → x, x.to(...) → x, etc."""
+        method = node.func.attr
+        if method == "to" and node.args:
+            self._annotate(
+                getattr(node, "lineno", 0),
+                Confidence.NEEDS_REVIEW,
+                ".to() may be a dtype cast, not just device move",
+            )
+        return node.func.value
+
+    def _handle_masked_fill(self, node: _ast.Call) -> _ast.expr:
+        """x.masked_fill(mask, value) → mx.where(mask, value, x)."""
+        receiver = node.func.value
+        if len(node.args) >= 2:
+            self._annotate(
+                getattr(node, "lineno", 0),
+                Confidence.NEEDS_REVIEW,
+                "masked_fill arg order differs from mx.where",
+            )
+            return _ast.Call(
+                func=_make_mx_attr("mx.where"),
+                args=[node.args[0], node.args[1], receiver],
+                keywords=[],
+            )
+        return node
+
+    # --- Helpers ---
+
+    def _rename_kwargs(
+        self,
+        keywords: list[_ast.keyword],
+        renames: dict[str, str],
+    ) -> list[_ast.keyword]:
+        """Apply parameter renames (e.g. dim → axis)."""
+        result = []
+        for kw in keywords:
+            new_arg = renames.get(kw.arg, kw.arg) if kw.arg else kw.arg
+            result.append(_ast.keyword(arg=new_arg, value=kw.value))
+        return result
+
+
+def _rewrite_forward_ast(module: Any) -> RewriteResult | None:
+    """AST-rewrite a module's forward() to MLX __call__().
+
+    Returns None if source is unavailable or unparseable.
+    """
+    forward = getattr(module, "forward", None)
+    if forward is None:
+        return None
+
+    try:
+        source = inspect.getsource(forward)
+    except (OSError, TypeError):
+        return None
+
+    source = textwrap.dedent(source)
+    try:
+        tree = _ast.parse(source)
+    except SyntaxError:
+        return None
+
+    rewriter = _TorchToMLXRewriter()
+    tree = rewriter.visit(tree)
+    _ast.fix_missing_locations(tree)
+
+    try:
+        result_source = _ast.unparse(tree)
+    except Exception:
+        return None
+
+    confidence = rewriter._confidence
+    if rewriter.unmapped_calls:
+        if _CONFIDENCE_ORDER.get(Confidence.NEEDS_REVIEW, 1) > _CONFIDENCE_ORDER.get(confidence, 0):
+            confidence = Confidence.NEEDS_REVIEW
+
+    return RewriteResult(
+        source=result_source,
+        confidence=confidence,
+        annotations=rewriter.annotations,
+        unmapped_calls=rewriter.unmapped_calls,
+    )
+
+
+def _format_ast_call(source: str, confidence: Confidence) -> str:
+    """Indent and annotate an AST-rewritten __call__ for class body."""
+    header = f"    # --- torch2mlx: {confidence.value.upper()} (AST rewrite) ---"
+    indented = "\n".join(f"    {line}" for line in source.split("\n"))
+    return f"{header}\n{indented}"
+
+
+def _try_ast_for_classdef(child: Any) -> tuple[str | None, str]:
+    """Try AST rewrite for a helper class __call__."""
+    rewrite = _rewrite_forward_ast(child)
+    if rewrite is not None and rewrite.confidence != Confidence.BLOCKER:
+        return rewrite.source, rewrite.confidence.value
+    return None, "todo"
+
+
+# ---------------------------------------------------------------------------
 # Top-level generation
 # ---------------------------------------------------------------------------
 
@@ -712,10 +1138,13 @@ def _walk_module(
                 todos.extend(sub_todos)
                 unmapped.extend(sub_unmapped)
                 if child_type not in seen_classes:
+                    cb, cc = _try_ast_for_classdef(child)
                     seen_classes[child_type] = _ClassDef(
                         name=child_type,
                         init_body="\n".join(sub_lines),
                         forward_sig=_get_forward_signature(child),
+                        call_body=cb,
+                        call_confidence=cc,
                     )
                 init_lines.append(f"        self.{safe_name} = {child_type}()")
             else:
@@ -735,10 +1164,13 @@ def _walk_module(
                 todos.extend(sub_todos)
                 unmapped.extend(sub_unmapped)
                 if child_type not in seen_classes:
+                    cb, cc = _try_ast_for_classdef(child)
                     seen_classes[child_type] = _ClassDef(
                         name=child_type,
                         init_body="\n".join(sub_lines),
                         forward_sig=_get_forward_signature(child),
+                        call_body=cb,
+                        call_confidence=cc,
                     )
                 init_lines.append(f"        self.{safe_name} = {child_type}()")
             else:
@@ -793,10 +1225,13 @@ def _handle_container(
                 rep, seen_classes
             )
             if item_type not in seen_classes:
+                cb, cc = _try_ast_for_classdef(rep)
                 seen_classes[item_type] = _ClassDef(
                     name=item_type,
                     init_body="\n".join(sub_lines),
                     forward_sig=_get_forward_signature(rep),
+                    call_body=cb,
+                    call_confidence=cc,
                 )
             line = f"        self.{safe_name} = [{item_type}() for _ in range({count})]"
             return [line], sub_total * count, sub_mapped * count, sub_todos, sub_unmapped
@@ -842,10 +1277,13 @@ def _handle_container(
             todos.extend(sub_todos)
             unmapped_list.extend(sub_unmapped)
             if child_type not in seen_classes:
+                cb, cc = _try_ast_for_classdef(child)
                 seen_classes[child_type] = _ClassDef(
                     name=child_type,
                     init_body="\n".join(sub_lines),
                     forward_sig=_get_forward_signature(child),
+                    call_body=cb,
+                    call_confidence=cc,
                 )
             items.append(f"{child_type}()")
         elif child_type in CONSTRUCTOR_SPECS:
@@ -928,8 +1366,12 @@ def generate(model: Any, class_name: str | None = None) -> GeneratedCode:
 
     coverage = mapped_leaves / total_leaves if total_leaves > 0 else 1.0
 
-    # Try fx trace for __call__
+    # __call__ generation cascade: fx trace → AST rewrite → TODO stub
     traced = False
+    ast_rewritten = False
+    call_confidence = "todo"
+
+    # 1. Try fx trace (works for simple traceable models)
     graph_module = _try_trace(model)
     if graph_module is not None:
         try:
@@ -938,21 +1380,35 @@ def generate(model: Any, class_name: str | None = None) -> GeneratedCode:
             call_method = f"    def __call__(self, {params}):\n{body}"
             traced = True
         except Exception:
+            pass
+
+    # 2. AST rewrite (handles dynamic control flow that fx cannot)
+    if not traced:
+        rewrite = _rewrite_forward_ast(model)
+        if rewrite is not None and rewrite.confidence != Confidence.BLOCKER:
+            call_method = _format_ast_call(rewrite.source, rewrite.confidence)
+            ast_rewritten = True
+            call_confidence = rewrite.confidence.value
+            # Merge unmapped calls into todos
+            for call in rewrite.unmapped_calls:
+                todos.append(f"__call__: unmapped call {call}")
+        else:
             call_method = _make_todo_call(model)
-    else:
-        call_method = _make_todo_call(model)
 
     # Assemble helper class source (post-order: deepest first)
     helper_source = ""
     for cls_def in seen_classes.values():
         cls_init = cls_def.init_body if cls_def.init_body.strip() else "        pass"
-        fwd_stub = _make_todo_call_helper(cls_def.name, cls_def.forward_sig)
+        if cls_def.call_body is not None:
+            call_str = _format_ast_call(cls_def.call_body, Confidence(cls_def.call_confidence))
+        else:
+            call_str = _make_todo_call_helper(cls_def.name, cls_def.forward_sig)
         helper_source += (
             f"class {cls_def.name}(nn.Module):\n"
             f"    def __init__(self) -> None:\n"
             f"        super().__init__()\n"
             f"{cls_init}\n\n"
-            f"{fwd_stub}\n\n\n"
+            f"{call_str}\n\n\n"
         )
 
     # Assemble main class source
@@ -977,6 +1433,8 @@ def generate(model: Any, class_name: str | None = None) -> GeneratedCode:
         todos=todos,
         unmapped=unmapped,
         traced=traced,
+        ast_rewritten=ast_rewritten,
+        call_confidence=call_confidence,
     )
 
 

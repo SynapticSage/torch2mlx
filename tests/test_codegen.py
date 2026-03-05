@@ -9,10 +9,12 @@ import pytest
 from torch2mlx.codegen import (
     CONSTRUCTOR_SPECS,
     ArgSpec,
+    Confidence,
     ConstructorSpec,
     GeneratedCode,
     _apply_transform,
     _format_value,
+    _rewrite_forward_ast,
 )
 from torch2mlx.registry import LAYER_REGISTRY
 
@@ -210,7 +212,8 @@ class TestGenerateCustomModel:
 
 
 class TestGenerateFallback:
-    def test_dynamic_control_flow(self):
+    def test_dynamic_control_flow_ast_rewrite(self):
+        """Dynamic control flow: fx fails, AST rewrite succeeds."""
         from torch2mlx.codegen import generate
 
         class DynamicModel(nn.Module):
@@ -226,7 +229,35 @@ class TestGenerateFallback:
 
         result = generate(DynamicModel())
         assert result.traced is False
-        assert "TODO" in result.source
+        assert result.ast_rewritten is True
+        # x.sum() → mx.sum(x), control flow preserved
+        assert "mx.sum(x)" in result.source
+        assert "if" in result.source
+        assert "NotImplementedError" not in result.source
+        ast.parse(result.source)
+
+    def test_todo_fallback_when_both_fail(self):
+        """TODO stub when both fx and AST rewrite fail."""
+        from unittest.mock import patch
+
+        from torch2mlx.codegen import generate
+
+        class DynamicModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc1 = nn.Linear(10, 10)
+                self.fc2 = nn.Linear(10, 10)
+
+            def forward(self, x):
+                if x.sum() > 0:
+                    return self.fc1(x)
+                return self.fc2(x)
+
+        # Simulate AST rewrite failure (e.g., C extension, generated code)
+        with patch("torch2mlx.codegen._rewrite_forward_ast", return_value=None):
+            result = generate(DynamicModel())
+        assert result.traced is False
+        assert result.ast_rewritten is False
         assert "NotImplementedError" in result.source
         ast.parse(result.source)
 
@@ -773,3 +804,381 @@ class TestMakeTodoCallHelper:
         assert "MyLayer.forward() requires manual translation" in stub
         assert "raise NotImplementedError" in stub
         assert "def __call__" in stub
+
+
+# ── AST rewriter tests ───────────────────────────────────────────────────────
+
+
+class TestASTRewriter:
+    """Unit tests for individual AST transformations."""
+
+    def test_torch_cat_to_mx_concatenate(self):
+        """torch.cat([a,b], dim=1) → mx.concatenate([a,b], axis=1)."""
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(20, 10)
+
+            def forward(self, x, y):
+                return self.fc(torch.cat([x, y], dim=1))
+
+        result = generate(Model())
+        assert "mx.concatenate" in result.source
+        assert "axis=1" in result.source
+
+    def test_method_view_to_reshape(self):
+        """x.view(batch, -1) → mx.reshape(x, (batch, -1))."""
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(10, 10)
+
+            def forward(self, x):
+                out = self.fc(x)
+                return out.view(-1, 10)
+
+        result = generate(Model())
+        # Either fx or AST should handle this
+        assert "mx.reshape" in result.source
+
+    def test_contiguous_removed(self):
+        """x.contiguous() → x (no-op removal)."""
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(10, 10)
+
+            def forward(self, x):
+                return self.fc(x).contiguous()
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert ".contiguous()" not in result.source
+
+    def test_dim_renamed_to_axis(self):
+        """F.softmax(x, dim=-1) → mx.softmax(x, axis=-1)."""
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+
+            def forward(self, x):
+                return F.softmax(x, dim=-1)
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "mx.softmax" in result.source
+        assert "axis=" in result.source
+        assert "dim=" not in result.source
+
+    def test_dtype_mapping(self):
+        """torch.float32 → mx.float32 in non-no-op contexts."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return torch.zeros(10, dtype=torch.float32)
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "mx.float32" in result.source
+        assert "mx.zeros" in result.source
+
+    def test_forward_renamed_to_call(self):
+        """forward → __call__."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return x
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "def __call__" in result.source
+        assert "def forward" not in result.source
+
+    def test_type_annotations_converted(self):
+        """torch.Tensor → mx.array in annotations."""
+
+        class Model(nn.Module):
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return x
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "mx.array" in result.source
+
+    def test_noop_to_removal(self):
+        """.to(device) is a no-op in MLX unified memory."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return x.to("cuda").contiguous()
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert ".to(" not in result.source
+        assert ".contiguous()" not in result.source
+
+    def test_unmapped_call_preserved(self):
+        """Unmapped torch calls are preserved with annotation."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return torch.unique(x)
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "unique" in result.source
+        assert "torch.unique" in result.unmapped_calls
+
+    def test_size_to_shape(self):
+        """x.size() → x.shape, x.size(0) → x.shape[0]."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                b = x.size(0)
+                s = x.size()
+                return b, s
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "x.shape[0]" in result.source
+        assert "x.shape" in result.source
+        assert ".size(" not in result.source
+
+    def test_float_cast(self):
+        """x.float() → x.astype(mx.float32)."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return x.float()
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "astype" in result.source
+        assert "mx.float32" in result.source
+
+    def test_dim_method(self):
+        """x.dim() → len(x.shape)."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return x.dim()
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "len(x.shape)" in result.source
+
+    def test_f_dropout_removed(self):
+        """F.dropout(x, ...) → x (no-op at eval)."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return F.dropout(x, p=0.1, training=self.training)
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "dropout" not in result.source
+
+    def test_torch_arange(self):
+        """torch.arange(n) → mx.arange(n)."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return torch.arange(x.size(0))
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "mx.arange" in result.source
+
+    def test_torch_zeros(self):
+        """torch.zeros(shape) → mx.zeros(shape)."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return torch.zeros(10, 20)
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "mx.zeros" in result.source
+
+    def test_super_forward_renamed(self):
+        """super().forward(x) → super().__call__(x)."""
+
+        class Base(nn.Module):
+            def forward(self, x):
+                return x
+
+        class Model(Base):
+            def forward(self, x):
+                return super().forward(x) + 1
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "super().__call__" in result.source
+        assert "super().forward" not in result.source
+
+    def test_self_submodule_calls_preserved(self):
+        """self.fc(x) stays as self.fc(x)."""
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(10, 10)
+
+            def forward(self, x):
+                return self.fc(x)
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "self.fc(x)" in result.source
+
+    def test_unsqueeze_to_expand_dims(self):
+        """x.unsqueeze(0) → mx.expand_dims(x, axis=0)."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return x.unsqueeze(0)
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "mx.expand_dims" in result.source
+
+    def test_permute_to_transpose(self):
+        """x.permute(0, 2, 1) → mx.transpose(x, (0, 2, 1))."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return x.permute(0, 2, 1)
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "mx.transpose" in result.source
+
+    def test_chained_noop(self):
+        """x.contiguous().view(-1) → mx.reshape(x, (-1,))."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return x.contiguous().view(-1)
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "mx.reshape" in result.source
+        assert ".contiguous()" not in result.source
+
+
+class TestASTCascade:
+    """Tests for the fx → AST → TODO cascade."""
+
+    def test_fx_preferred_over_ast(self):
+        """Simple traceable model uses fx, not AST."""
+        from torch2mlx.codegen import generate
+
+        class SimpleModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(10, 5)
+
+            def forward(self, x):
+                return self.fc(x)
+
+        result = generate(SimpleModel())
+        assert result.traced is True
+        assert result.ast_rewritten is False
+
+    def test_ast_used_when_fx_fails(self):
+        """Dynamic model falls through to AST rewrite."""
+        from torch2mlx.codegen import generate
+
+        class DynamicModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(10, 10)
+
+            def forward(self, x):
+                if x.sum() > 0:
+                    return self.fc(x)
+                return x
+
+        result = generate(DynamicModel())
+        assert result.traced is False
+        assert result.ast_rewritten is True
+
+    def test_helper_classes_get_ast_call(self):
+        """Helper classes get AST-rewritten __call__ instead of TODO stub."""
+        from torch2mlx.codegen import generate
+
+        class InnerBlock(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(10, 10)
+                self.act = nn.ReLU()
+
+            def forward(self, x):
+                return self.act(self.fc(x))
+
+        class OuterModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.block = InnerBlock()
+                self.head = nn.Linear(10, 2)
+
+            def forward(self, x):
+                return self.head(self.block(x))
+
+        result = generate(OuterModel())
+        # Helper class should have __call__ from AST, not TODO
+        assert "class InnerBlock(nn.Module):" in result.source
+        assert "NotImplementedError" not in result.source
+        # Should have AST rewrite header
+        assert "AST rewrite" in result.source
+        ast.parse(result.source)
+
+
+class TestConfidenceAnnotations:
+    """Tests for confidence level tracking."""
+
+    def test_mechanical_ops(self):
+        """All-mapped operations yield MECHANICAL confidence."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return F.softmax(x, dim=-1)
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert result.confidence == Confidence.MECHANICAL
+
+    def test_unmapped_yields_needs_review(self):
+        """Unmapped torch calls lower confidence to NEEDS_REVIEW."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return torch.unique(x)
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert result.confidence == Confidence.NEEDS_REVIEW
+        assert len(result.unmapped_calls) > 0
+
+    def test_generated_code_confidence_field(self):
+        """GeneratedCode has call_confidence field."""
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(10, 10)
+
+            def forward(self, x):
+                if x.sum() > 0:
+                    return self.fc(x)
+                return x
+
+        result = generate(Model())
+        assert result.call_confidence in ("mechanical", "needs_review", "todo")
