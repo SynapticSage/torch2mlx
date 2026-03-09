@@ -235,3 +235,101 @@ class TestCodegenE2ECoverage:
         for model in [TinyMLP(), TransformerBlock(), MultiLayerNorm(), DeepMLP()]:
             result = generate(model)
             ast.parse(result.source)  # Must not raise
+
+
+# ---------------------------------------------------------------------------
+# HuggingFace e2e tests: generate → parse → instantiate → load weights
+# ---------------------------------------------------------------------------
+
+transformers = pytest.importorskip("transformers")
+
+# Models that successfully load weights (no ParameterList / custom buffer issues)
+_HF_MODELS = [
+    ("BertModel", "bert-base-uncased", 199),
+    ("RobertaModel", "roberta-base", 199),
+    ("ElectraModel", "google/electra-small-discriminator", 199),
+    ("DistilBertModel", "distilbert-base-uncased", 100),
+]
+
+
+@pytest.fixture(scope="module")
+def _hf_cache():
+    """Cache generated code + weights across tests in this module."""
+    return {}
+
+
+def _get_hf_data(cls_name, checkpoint, cache):
+    """Load or retrieve cached HF model data."""
+    if cls_name in cache:
+        return cache[cls_name]
+
+    cls = getattr(transformers, cls_name)
+    model = cls.from_pretrained(checkpoint)
+    model.eval()
+
+    result = generate(model)
+
+    tmp = tempfile.mkdtemp()
+    out = str(Path(tmp) / "weights")
+    convert(model, out)
+    params = load_converted(out)
+    flat = flatten(params)
+    weights = [(k, mx.array(v)) for k, v in flat.items()]
+
+    data = {
+        "result": result,
+        "weights": weights,
+        "n_weights": len(weights),
+    }
+    cache[cls_name] = data
+    return data
+
+
+class TestHFCodegenE2E:
+    """HuggingFace models: generate → parse → instantiate → load weights."""
+
+    @pytest.mark.parametrize("cls_name,checkpoint,expected_weights", _HF_MODELS)
+    def test_parses(self, cls_name, checkpoint, expected_weights, _hf_cache):
+        data = _get_hf_data(cls_name, checkpoint, _hf_cache)
+        ast.parse(data["result"].source)
+
+    @pytest.mark.parametrize("cls_name,checkpoint,expected_weights", _HF_MODELS)
+    def test_coverage_100(self, cls_name, checkpoint, expected_weights, _hf_cache):
+        data = _get_hf_data(cls_name, checkpoint, _hf_cache)
+        assert data["result"].coverage == 1.0
+
+    @pytest.mark.parametrize("cls_name,checkpoint,expected_weights", _HF_MODELS)
+    def test_instantiates(self, cls_name, checkpoint, expected_weights, _hf_cache):
+        data = _get_hf_data(cls_name, checkpoint, _hf_cache)
+        ns: dict = {}
+        exec(data["result"].source, ns)
+        mlx_model = ns[cls_name]()
+        assert mlx_model is not None
+
+    @pytest.mark.parametrize("cls_name,checkpoint,expected_weights", _HF_MODELS)
+    def test_loads_weights(self, cls_name, checkpoint, expected_weights, _hf_cache):
+        data = _get_hf_data(cls_name, checkpoint, _hf_cache)
+        ns: dict = {}
+        exec(data["result"].source, ns)
+        mlx_model = ns[cls_name]()
+        mlx_model.load_weights(data["weights"])
+        # Verify weight count
+        assert data["n_weights"] == expected_weights
+
+    @pytest.mark.parametrize("cls_name,checkpoint,expected_weights", _HF_MODELS)
+    def test_has_helper_classes(self, cls_name, checkpoint, expected_weights, _hf_cache):
+        """Nested models should emit helper class definitions."""
+        data = _get_hf_data(cls_name, checkpoint, _hf_cache)
+        source = data["result"].source
+        n_classes = source.count("class ")
+        # All these models are nested — should have multiple helper classes
+        assert n_classes > 1, f"{cls_name} should emit helper classes, got {n_classes}"
+
+    @pytest.mark.parametrize("cls_name,checkpoint,expected_weights", _HF_MODELS)
+    def test_ast_rewritten_calls(self, cls_name, checkpoint, expected_weights, _hf_cache):
+        """Generated __call__ methods should be AST-rewritten, not TODO stubs."""
+        data = _get_hf_data(cls_name, checkpoint, _hf_cache)
+        source = data["result"].source
+        assert "MECHANICAL" in source, f"{cls_name} should have MECHANICAL __call__"
+        # Should NOT have NotImplementedError stubs (all helper classes get AST rewrite)
+        assert source.count("NotImplementedError") == 0
