@@ -122,6 +122,29 @@ def _populate() -> None:
         OpMapping("x.matmul", "mx.matmul", {}, "method -> function"),
         # F.* functions (additional)
         OpMapping("F.dropout", "no_op", {}, "No-op at eval time"),
+        OpMapping("F.pad", "mx.pad", {}, "Different pad format"),
+        OpMapping(
+            "F.scaled_dot_product_attention",
+            "mx.fast.scaled_dot_product_attention",
+            {"attn_mask": "mask"},
+            "SDPA — MLX has mx.fast.scaled_dot_product_attention",
+        ),
+        # More torch.* functions found in HF models
+        OpMapping("torch.bmm", "mx.matmul", {}, "Batch matrix multiply"),
+        OpMapping("torch.flatten", "mx.flatten", {}, ""),
+        OpMapping("torch.isinf", "mx.isinf", {}, ""),
+        OpMapping("torch.isnan", "mx.isnan", {}, ""),
+        OpMapping("torch.sigmoid", "mx.sigmoid", {}, ""),
+        OpMapping("torch.cos", "mx.cos", {}, ""),
+        OpMapping("torch.sin", "mx.sin", {}, ""),
+        OpMapping("torch.norm", "mx.linalg.norm", {}, "Different API"),
+        OpMapping("torch.mean", "mx.mean", {"dim": "axis"}, ""),
+        OpMapping("torch.sum", "mx.sum", {"dim": "axis"}, ""),
+        OpMapping("torch.max", "mx.max", {"dim": "axis"}, ""),
+        OpMapping("torch.min", "mx.min", {"dim": "axis"}, ""),
+        OpMapping("torch.roll", "mx.roll", {}, ""),
+        OpMapping("torch.triu", "mx.triu", {}, ""),
+        OpMapping("torch.tril", "mx.tril", {}, ""),
         # Python operators (emitted by torch.fx for arithmetic expressions)
         OpMapping("operator.add", "mx.add", {}, "Python + operator"),
         OpMapping("operator.mul", "mx.multiply", {}, "Python * operator"),
@@ -151,6 +174,12 @@ def _populate_dtypes() -> None:
         DtypeMapping("torch.float64", "mx.float32", "MLX lacks float64; downcast"),
         DtypeMapping("torch.complex64", "unsupported", "MLX lacks complex dtypes"),
         DtypeMapping("torch.complex128", "unsupported", "MLX lacks complex dtypes"),
+        # Short aliases used in HF code (torch.long, torch.float, etc.)
+        DtypeMapping("torch.long", "mx.int64", "Alias for torch.int64"),
+        DtypeMapping("torch.int", "mx.int32", "Alias for torch.int32"),
+        DtypeMapping("torch.float", "mx.float32", "Alias for torch.float32"),
+        DtypeMapping("torch.double", "mx.float32", "Alias; MLX lacks float64"),
+        DtypeMapping("torch.half", "mx.float16", "Alias for torch.float16"),
     ]
     for entry in _ENTRIES:
         register_dtype(entry)

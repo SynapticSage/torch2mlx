@@ -740,6 +740,14 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
         if node.name == "forward":
             node.name = "__call__"
             node.decorator_list = []  # Strip decorators
+            # Strip docstrings (HF forward() docstrings reference torch types)
+            if (
+                node.body
+                and isinstance(node.body[0], _ast.Expr)
+                and isinstance(node.body[0].value, _ast.Constant)
+                and isinstance(node.body[0].value.value, str)
+            ):
+                node.body = node.body[1:]
         # Convert type annotations
         if node.returns:
             node.returns = self._convert_annotation(node.returns)
@@ -750,7 +758,7 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
         return node
 
     def _convert_annotation(self, node: _ast.expr) -> _ast.expr:
-        """torch.Tensor / torch.*Tensor → mx.array."""
+        """Recursively convert torch type annotations to MLX equivalents."""
         if isinstance(node, _ast.Attribute):
             if isinstance(node.value, _ast.Name) and node.value.id == "torch":
                 if "Tensor" in node.attr:
@@ -759,9 +767,13 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
                         attr="array",
                         ctx=_ast.Load(),
                     )
-        # Optional[torch.Tensor] → Optional[mx.array]
+        # Subscript: Optional[X], Tuple[X, Y], Union[X, Y], etc.
         if isinstance(node, _ast.Subscript):
             node.slice = self._convert_annotation(node.slice)
+            return node
+        # Tuple node: (X, Y, Z) inside Subscript slice
+        if isinstance(node, _ast.Tuple):
+            node.elts = [self._convert_annotation(e) for e in node.elts]
             return node
         # String annotations containing "Tensor"
         if isinstance(node, _ast.Constant) and isinstance(node.value, str):
@@ -793,6 +805,11 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
         # Visit children first so nested transforms resolve
         self.generic_visit(node)
 
+        # Strip device=/pin_memory=/requires_grad= from ALL calls
+        node.keywords = [
+            kw for kw in node.keywords if kw.arg not in self._STRIP_KWARGS
+        ]
+
         func = node.func
         if not isinstance(func, _ast.Attribute):
             return node
@@ -815,7 +832,11 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
         if isinstance(func.value, _ast.Name) and func.value.id == "torch":
             return self._rewrite_torch_func(node, attr_name)
 
-        # F.func(args) or torch.nn.functional.func(args)
+        # torch.nn.functional.xxx(args) — multi-level attribute
+        if self._is_torch_nn_functional(func.value):
+            return self._rewrite_f_func(node, attr_name)
+
+        # F.func(args)
         if isinstance(func.value, _ast.Name) and func.value.id == "F":
             return self._rewrite_f_func(node, attr_name)
 
@@ -829,6 +850,28 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
             and isinstance(node.func, _ast.Name)
             and node.func.id == "super"
         )
+
+    def _is_torch_nn_functional(self, node: _ast.expr) -> bool:
+        """Check if node is torch.nn.functional or nn.functional."""
+        # torch.nn.functional.xxx
+        if (
+            isinstance(node, _ast.Attribute)
+            and node.attr == "functional"
+            and isinstance(node.value, _ast.Attribute)
+            and node.value.attr == "nn"
+            and isinstance(node.value.value, _ast.Name)
+            and node.value.value.id == "torch"
+        ):
+            return True
+        # nn.functional.xxx
+        if (
+            isinstance(node, _ast.Attribute)
+            and node.attr == "functional"
+            and isinstance(node.value, _ast.Name)
+            and node.value.id == "nn"
+        ):
+            return True
+        return False
 
     # --- torch.func() rewriting ---
 
@@ -987,14 +1030,19 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
 
     # --- Helpers ---
 
+    # Keywords to strip from all rewritten calls (MLX unified memory)
+    _STRIP_KWARGS = frozenset({"device", "pin_memory", "requires_grad", "non_blocking"})
+
     def _rename_kwargs(
         self,
         keywords: list[_ast.keyword],
         renames: dict[str, str],
     ) -> list[_ast.keyword]:
-        """Apply parameter renames (e.g. dim → axis)."""
+        """Apply parameter renames and strip device= etc."""
         result = []
         for kw in keywords:
+            if kw.arg in self._STRIP_KWARGS:
+                continue
             new_arg = renames.get(kw.arg, kw.arg) if kw.arg else kw.arg
             result.append(_ast.keyword(arg=new_arg, value=kw.value))
         return result
