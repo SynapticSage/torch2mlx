@@ -336,8 +336,8 @@ def test_gpt2_init_contains_layernorm():
     """GPT-2 codegen should emit ln_f (final LayerNorm)."""
     data = _codegen_hf("GPT2Model", "gpt2")
     source = data["result"].source
-    # normalized_shape is (768,) — a 1-tuple
-    assert "nn.LayerNorm((768,))" in source
+    # normalized_shape (768,) is unwrapped to scalar by tuple_to_scalar transform
+    assert "nn.LayerNorm(768)" in source
 
 
 def test_bloom_init_contains_embeddings():

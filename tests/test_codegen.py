@@ -516,7 +516,7 @@ class TestModuleListComposite:
         assert "class Block(nn.Module):" in result.source
         assert "Block() for _ in range(3)" in result.source
         assert "nn.Linear(16, 16)" in result.source
-        assert "nn.LayerNorm((16,))" in result.source
+        assert "nn.LayerNorm(16)" in result.source
         assert result.coverage == 1.0
         ast.parse(result.source)
 

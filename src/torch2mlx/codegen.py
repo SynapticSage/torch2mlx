@@ -168,7 +168,7 @@ _EMBEDDING_SPEC = ConstructorSpec(
 
 _LAYERNORM_SPEC = ConstructorSpec(
     "nn.LayerNorm",
-    (ArgSpec("normalized_shape", "dims"),),
+    (ArgSpec("normalized_shape", "dims", "tuple_to_scalar"),),
 )
 
 _RMSNORM_SPEC = ConstructorSpec(
@@ -466,6 +466,11 @@ def _class_name_from_module(module: Any) -> str:
 # Map torch function objects to their string keys in OP_REGISTRY
 _FX_FUNCTION_MAP: dict[Any, str] = {}
 
+# PyTorch-only kwargs to strip from fx call_function nodes
+_FX_STRIP_KWARGS: frozenset[str] = frozenset({
+    "inplace", "device", "pin_memory", "requires_grad", "memory_format",
+})
+
 # Map torch method names to their string keys in OP_REGISTRY
 _FX_METHOD_MAP: dict[str, str] = {
     "view": "x.view",
@@ -618,10 +623,12 @@ def _translate_node(node: Any) -> str | None:
                     if len(args_strs) == 2:
                         return f"{node.name} = {args_strs[0]}[{args_strs[1]}]"
 
-                # Build call with param renames
+                # Build call with param renames, stripping PyTorch-only kwargs
                 args_strs = [_node_arg_repr(a) for a in node.args]
                 kw_parts: list[str] = []
                 for k, v in node.kwargs.items():
+                    if k in _FX_STRIP_KWARGS:
+                        continue
                     mlx_k = mapping.param_renames.get(k, k)
                     kw_parts.append(f"{mlx_k}={_node_arg_repr(v)}")
                 all_args = ", ".join(args_strs + kw_parts)
