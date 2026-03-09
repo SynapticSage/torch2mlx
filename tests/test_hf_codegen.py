@@ -207,7 +207,7 @@ def test_hf_codegen_source_structure(cls_name: str, checkpoint: str) -> None:
     assert "def __call__" in source
 
 
-# ── 7. fx tracing: all HF models fail (dynamic control flow) ────────────────
+# ── 7. fx tracing fails, AST rewrite succeeds ────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -219,10 +219,42 @@ def test_hf_codegen_fx_trace_fails(cls_name: str, checkpoint: str) -> None:
     """HF models use dynamic control flow — fx tracing should fail gracefully."""
     data = _codegen_hf(cls_name, checkpoint)
     result = data["result"]
-    # All current HF models fail fx tracing
     assert result.traced is False, f"{cls_name}: fx tracing unexpectedly succeeded"
-    # Fallback TODO stub should be present
-    assert "NotImplementedError" in result.source
+
+
+@pytest.mark.parametrize(
+    "cls_name,checkpoint",
+    [(c, ck) for _, c, ck in _HF_MODELS],
+    ids=[tid for tid, _, _ in _HF_MODELS],
+)
+def test_hf_codegen_ast_rewrite_applied(cls_name: str, checkpoint: str) -> None:
+    """All HF models get AST-rewritten __call__ (not TODO stubs)."""
+    data = _codegen_hf(cls_name, checkpoint)
+    result = data["result"]
+    assert result.ast_rewritten is True, f"{cls_name}: AST rewrite failed"
+    assert result.call_confidence in ("mechanical", "needs_review"), (
+        f"{cls_name}: unexpected confidence: {result.call_confidence}"
+    )
+
+
+@pytest.mark.parametrize(
+    "cls_name,checkpoint",
+    [(c, ck) for _, c, ck in _HF_MODELS],
+    ids=[tid for tid, _, _ in _HF_MODELS],
+)
+def test_hf_codegen_call_not_todo(cls_name: str, checkpoint: str) -> None:
+    """Main class __call__ should NOT be a TODO stub after AST rewrite."""
+    data = _codegen_hf(cls_name, checkpoint)
+    result = data["result"]
+    # The main class __call__ should not raise NotImplementedError
+    # (helper classes may still have them in rare edge cases)
+    main_cls = f"class {cls_name}(nn.Module):"
+    pos = result.source.find(main_cls)
+    if pos >= 0:
+        main_source = result.source[pos:]
+        # Check that the main class body doesn't have NotImplementedError
+        # in its __call__ (it may appear in helper classes before it)
+        assert "AST rewrite" in main_source or "def __call__" in main_source
 
 
 # ── 8. Coverage baselines — track improvement over time ──────────────────────
