@@ -249,6 +249,8 @@ _HF_MODELS = [
     ("RobertaModel", "roberta-base", 199),
     ("ElectraModel", "google/electra-small-discriminator", 199),
     ("DistilBertModel", "distilbert-base-uncased", 100),
+    ("ViTModel", "google/vit-base-patch16-224", 200),
+    ("XLNetModel", "xlnet-base-cased", 206),
 ]
 
 

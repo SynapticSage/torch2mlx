@@ -135,7 +135,7 @@ class TestGenerateLinear:
         from torch2mlx.codegen import generate
 
         result = generate(nn.Linear(10, 20, bias=False))
-        assert "nn.Linear(10, 20, False)" in result.source
+        assert "nn.Linear(10, 20, bias=False)" in result.source
 
     def test_linear_parses(self):
         from torch2mlx.codegen import generate
@@ -156,7 +156,7 @@ class TestGenerateConv:
         from torch2mlx.codegen import generate
 
         result = generate(nn.Conv1d(1, 8, 5, stride=2))
-        assert "nn.Conv1d(1, 8, 5, 2)" in result.source
+        assert "nn.Conv1d(1, 8, 5, stride=2)" in result.source
 
 
 class TestGenerateSequential:

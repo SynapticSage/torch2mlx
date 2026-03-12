@@ -429,18 +429,31 @@ _CONTAINER_TYPES = frozenset(
 
 def _format_constructor(module: Any, spec: ConstructorSpec) -> str:
     """Format a single MLX constructor call from a torch module and its spec."""
-    parts: list[str] = []
+    positional: list[str] = []
+    keyword: list[str] = []
+    use_keyword = False  # Once we skip a positional arg, rest must be keyword
+
     for arg in spec.args:
         raw = getattr(module, arg.attr, None)
         value = _apply_transform(raw, arg.transform, module)
 
         # Omit kwargs that match their default
         if arg.default is not None and value == arg.default:
+            use_keyword = True  # Gap in positional args → rest are keyword
             continue
 
-        parts.append(_format_value(value))
+        formatted = _format_value(value)
+        # Use keyword when: we've already skipped a positional arg, OR
+        # this arg has a default (optional kwarg that differs from default)
+        if use_keyword or arg.default is not None:
+            kw_name = arg.mlx_name or arg.attr
+            keyword.append(f"{kw_name}={formatted}")
+            use_keyword = True
+        else:
+            positional.append(formatted)
 
-    return f"{spec.mlx_call}({', '.join(parts)})"
+    all_parts = positional + keyword
+    return f"{spec.mlx_call}({', '.join(all_parts)})"
 
 
 def _sanitize_name(name: str) -> str:
@@ -1236,6 +1249,17 @@ def _walk_module(
                 init_lines.append(
                     f"        # TODO: self.{safe_name} = ...  # {child_type} — no constructor spec"
                 )
+
+    # Emit orphan nn.Parameters (not inside any child submodule)
+    child_names = {name for name, _ in module.named_children()}
+    for pname, param in module.named_parameters(recurse=False):
+        if pname in child_names:
+            continue  # belongs to a child, already handled
+        safe_pname = _sanitize_name(pname)
+        shape = tuple(param.shape)
+        init_lines.append(f"        self.{safe_pname} = mx.zeros({_format_value(shape)})")
+        total += 1
+        mapped += 1
 
     return init_lines, total, mapped, todos, unmapped
 
