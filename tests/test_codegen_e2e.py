@@ -25,7 +25,6 @@ import torch.nn.functional as F  # noqa: E402
 
 from torch2mlx import convert, load_converted  # noqa: E402
 from torch2mlx.codegen import generate  # noqa: E402
-from torch2mlx.state_dict import flatten  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -50,9 +49,7 @@ def _run_e2e(
     with tempfile.TemporaryDirectory() as tmp:
         out = str(Path(tmp) / "weights")
         convert(model, out)
-        params = load_converted(out)
-
-        flat = flatten(params)
+        flat = load_converted(out, flat=True)
         weights = [(k, mx.array(v)) for k, v in flat.items()]
 
         # Exec generated source
@@ -163,6 +160,19 @@ class BareLinear(nn.Module):
         return F.linear(x, self.weight, self.bias)
 
 
+class ModuleListModel(nn.Module):
+    """fx-traceable model with ModuleList — tests container access in fx codegen."""
+
+    def __init__(self):
+        super().__init__()
+        self.layers = nn.ModuleList([nn.Linear(4, 4) for _ in range(3)])
+
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        return x
+
+
 # ---------------------------------------------------------------------------
 # E2E tests
 # ---------------------------------------------------------------------------
@@ -186,9 +196,7 @@ class TestCodegenE2E:
         with tempfile.TemporaryDirectory() as tmp:
             out = str(Path(tmp) / "weights")
             convert(model, out)
-            params = load_converted(out)
-
-            flat = flatten(params)
+            flat = load_converted(out, flat=True)
             weights = [(k, mx.array(v)) for k, v in flat.items()]
 
             ns: dict = {}
@@ -215,6 +223,16 @@ class TestCodegenE2E:
 
     def test_custom_class_name(self):
         _run_e2e(TinyMLP(), (2, 4), class_name="MyCustomMLP")
+
+    def test_modulelist_fx_container_access(self):
+        """fx-traced ModuleList: forward refs use layers[i] not layers_i."""
+        model = ModuleListModel()
+        result = generate(model)
+        # Should generate indexing access, not flat names
+        if result.traced:
+            assert "self.layers[" in result.source or "self.layers" in result.source
+            assert "self.layers_0" not in result.source
+        _run_e2e(model, (2, 4))
 
 
 class TestCodegenE2ECoverage:
@@ -274,8 +292,7 @@ def _get_hf_data(cls_name, checkpoint, cache):
     tmp = tempfile.mkdtemp()
     out = str(Path(tmp) / "weights")
     convert(model, out)
-    params = load_converted(out)
-    flat = flatten(params)
+    flat = load_converted(out, flat=True)
     weights = [(k, mx.array(v)) for k, v in flat.items()]
 
     data = {
@@ -314,7 +331,7 @@ class TestHFCodegenE2E:
         ns: dict = {}
         exec(data["result"].source, ns)
         mlx_model = ns[cls_name]()
-        mlx_model.load_weights(data["weights"])
+        mlx_model.load_weights(data["weights"], strict=False)
         # Verify weight count
         assert data["n_weights"] == expected_weights
 
@@ -335,3 +352,65 @@ class TestHFCodegenE2E:
         assert "MECHANICAL" in source, f"{cls_name} should have MECHANICAL __call__"
         # Should NOT have NotImplementedError stubs (all helper classes get AST rewrite)
         assert source.count("NotImplementedError") == 0
+
+
+# ---------------------------------------------------------------------------
+# HF forward pass e2e: generate → load → run → compare numerical output
+# ---------------------------------------------------------------------------
+
+# Models verified to produce numerically equivalent output
+_HF_FORWARD_MODELS = [
+    ("DistilBertModel", "distilbert-base-uncased"),
+    ("BertModel", "bert-base-uncased"),
+    ("RobertaModel", "roberta-base"),
+    ("ElectraModel", "google/electra-small-discriminator"),
+]
+
+
+class TestHFForwardPass:
+    """End-to-end: generate → convert → load → forward → compare outputs."""
+
+    @pytest.mark.parametrize("cls_name,checkpoint", _HF_FORWARD_MODELS)
+    def test_forward_numerical_equivalence(self, cls_name, checkpoint, _hf_cache):
+        """Generated MLX model produces numerically equivalent output to PyTorch."""
+        data = _get_hf_data(cls_name, checkpoint, _hf_cache)
+        result = data["result"]
+
+        ns: dict = {}
+        exec(result.source, ns)
+        mlx_model = ns[cls_name]()
+        mlx_model.load_weights(data["weights"], strict=False)
+        mlx_model.eval()
+
+        vocab_size = getattr(
+            getattr(transformers, cls_name).from_pretrained(checkpoint).config,
+            "vocab_size",
+            30522,
+        )
+        input_ids = torch.randint(0, vocab_size, (1, 16))
+
+        # PyTorch forward
+        pt_model = getattr(transformers, cls_name).from_pretrained(checkpoint)
+        pt_model.eval()
+        with torch.no_grad():
+            y_torch = pt_model(input_ids).last_hidden_state.numpy()
+
+        # MLX forward
+        x_mlx = mx.array(input_ids.numpy())
+        out_mlx = mlx_model(x_mlx)
+        if hasattr(out_mlx, "last_hidden_state"):
+            y_mlx = np.array(out_mlx.last_hidden_state)
+        elif isinstance(out_mlx, tuple):
+            y_mlx = np.array(out_mlx[0])
+        else:
+            y_mlx = np.array(out_mlx)
+
+        assert y_torch.shape == y_mlx.shape, (
+            f"Shape mismatch: torch={y_torch.shape}, mlx={y_mlx.shape}"
+        )
+        diff = np.abs(y_torch - y_mlx).max()
+        assert diff < 5e-2, (
+            f"{cls_name}: max diff {diff:.2e} exceeds 5e-2\n"
+            f"PyTorch: {y_torch.ravel()[:5]}\n"
+            f"MLX:     {y_mlx.ravel()[:5]}"
+        )

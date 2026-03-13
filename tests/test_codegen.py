@@ -13,6 +13,7 @@ from torch2mlx.codegen import (
     ConstructorSpec,
     GeneratedCode,
     _apply_transform,
+    _dotted_to_access,
     _format_value,
     _rewrite_forward_ast,
 )
@@ -103,6 +104,28 @@ class TestDataclasses:
         cs = ConstructorSpec("nn.Linear", ())
         with pytest.raises(AttributeError):
             cs.mlx_call = "nn.ReLU"  # type: ignore[misc]
+
+
+class TestDottedToAccess:
+    """Unit tests for _dotted_to_access (fx target → Python access)."""
+
+    def test_simple_name(self):
+        assert _dotted_to_access("fc") == "fc"
+
+    def test_nested_name(self):
+        assert _dotted_to_access("block.fc") == "block.fc"
+
+    def test_numeric_index(self):
+        assert _dotted_to_access("layers.0.fc") == "layers[0].fc"
+
+    def test_multiple_indices(self):
+        assert _dotted_to_access("layers.0.sublayers.1") == "layers[0].sublayers[1]"
+
+    def test_numeric_root(self):
+        assert _dotted_to_access("0.linear") == "layer_0.linear"
+
+    def test_bare_numeric(self):
+        assert _dotted_to_access("0") == "layer_0"
 
 
 class TestSpecRegistryConsistency:
@@ -773,6 +796,273 @@ class TestContainerInContainer:
         ast.parse(result.source)
 
 
+class TestNonUniformContainer:
+    """ModuleList where items share a type but have different structures."""
+
+    def test_nonuniform_composite_variant_classes(self):
+        """Items with same type name but different sub-modules → variant classes."""
+        from torch2mlx.codegen import generate
+
+        class Stage(nn.Module):
+            def __init__(self, has_downsample: bool):
+                super().__init__()
+                self.fc = nn.Linear(8, 8)
+                if has_downsample:
+                    self.downsample = nn.Linear(8, 16)
+                else:
+                    self.downsample = None
+
+            def forward(self, x):
+                x = self.fc(x)
+                if self.downsample is not None:
+                    x = self.downsample(x)
+                return x
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.stages = nn.ModuleList(
+                    [
+                        Stage(has_downsample=True),
+                        Stage(has_downsample=True),
+                        Stage(has_downsample=False),
+                    ]
+                )
+
+            def forward(self, x):
+                for s in self.stages:
+                    x = s(x)
+                return x
+
+        result = generate(Model())
+        # Should NOT use list comprehension (items differ structurally)
+        assert "for _ in range(" not in result.source
+        # Should emit variant class for the different structure
+        assert "class Stage(nn.Module):" in result.source
+        assert "class Stage_v2(nn.Module):" in result.source
+        # Variant without downsample should have self.downsample = None
+        assert "self.downsample = None" in result.source
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+    def test_nonuniform_preserves_uniform_when_identical(self):
+        """Fingerprint check doesn't break truly uniform containers."""
+        from torch2mlx.codegen import generate
+
+        class Block(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(4, 4)
+
+            def forward(self, x):
+                return self.fc(x)
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.blocks = nn.ModuleList([Block() for _ in range(3)])
+
+            def forward(self, x):
+                for b in self.blocks:
+                    x = b(x)
+                return x
+
+        result = generate(Model())
+        # Truly uniform → should still use list comprehension
+        assert "Block() for _ in range(3)" in result.source
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+    def test_nonuniform_leaf_different_params(self):
+        """Same leaf type with different constructor args → individual items."""
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.projs = nn.ModuleList(
+                    [
+                        nn.Linear(8, 16),
+                        nn.Linear(8, 32),
+                        nn.Linear(8, 64),
+                    ]
+                )
+
+            def forward(self, x):
+                return [p(x) for p in self.projs]
+
+        result = generate(Model())
+        # Different shapes → individual constructors, not list comprehension
+        assert "nn.Linear(8, 16)" in result.source
+        assert "nn.Linear(8, 32)" in result.source
+        assert "nn.Linear(8, 64)" in result.source
+        assert "for _ in range(" not in result.source
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+
+class TestScalarFingerprint:
+    """Scalar attrs included in fingerprint for container deduplication."""
+
+    def test_nonuniform_scalar_creates_variants(self):
+        """Different scalar constants → variant classes (not compressed)."""
+        from torch2mlx.codegen import generate
+
+        class ScaledBlock(nn.Module):
+            def __init__(self, scale: float):
+                super().__init__()
+                self.fc = nn.Linear(4, 4)
+                self.scale = scale
+
+            def forward(self, x):
+                return self.fc(x) * self.scale
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.blocks = nn.ModuleList(
+                    [
+                        ScaledBlock(2.0),
+                        ScaledBlock(4.0),
+                    ]
+                )
+
+            def forward(self, x):
+                for b in self.blocks:
+                    x = b(x)
+                return x
+
+        result = generate(Model())
+        # Different scale → should NOT use list comprehension
+        assert "for _ in range(" not in result.source
+        # Should create variant classes
+        assert "class ScaledBlock(nn.Module):" in result.source
+        assert "class ScaledBlock_v2(nn.Module):" in result.source
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+    def test_uniform_scalar_still_compresses(self):
+        """Same scalars → single list comprehension (no false split)."""
+        from torch2mlx.codegen import generate
+
+        class ScaledBlock(nn.Module):
+            def __init__(self, scale: float):
+                super().__init__()
+                self.fc = nn.Linear(4, 4)
+                self.scale = scale
+
+            def forward(self, x):
+                return self.fc(x) * self.scale
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.blocks = nn.ModuleList(
+                    [
+                        ScaledBlock(2.0),
+                        ScaledBlock(2.0),
+                        ScaledBlock(2.0),
+                    ]
+                )
+
+            def forward(self, x):
+                for b in self.blocks:
+                    x = b(x)
+                return x
+
+        result = generate(Model())
+        # Same scalar → uniform, use list comprehension
+        assert "ScaledBlock() for _ in range(3)" in result.source
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+
+class TestOrphanParameters:
+    """Orphan nn.Parameters on composite modules are emitted in __init__."""
+
+    def test_orphan_param_emitted(self):
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(4, 4)
+                self.cls_token = nn.Parameter(torch.randn(1, 1, 4))
+
+            def forward(self, x):
+                return self.fc(x) + self.cls_token
+
+        result = generate(Model())
+        assert "mx.zeros((1, 1, 4))" in result.source
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+
+class TestOrphanBuffers:
+    """Orphan buffers (position_ids, causal masks, etc.) are emitted in __init__."""
+
+    def test_buffer_emitted(self):
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(4, 4)
+                self.register_buffer("position_ids", torch.arange(16).unsqueeze(0))
+
+            def forward(self, x):
+                return self.fc(x)
+
+        result = generate(Model())
+        assert "self.position_ids = mx.zeros((1, 16))" in result.source
+        # Buffers don't count toward coverage (not learned weights)
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+    def test_buffer_not_double_counted(self):
+        """Buffer on a leaf module (like LayerNorm) is handled by constructor, not orphan."""
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.norm = nn.LayerNorm(8)
+
+            def forward(self, x):
+                return self.norm(x)
+
+        result = generate(Model())
+        # LayerNorm has internal buffers (weight, bias) — handled by constructor spec
+        # No orphan buffer emission expected
+        assert result.source.count("mx.zeros") == 0
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+    def test_non_persistent_buffer_has_computed_init(self):
+        """Non-persistent buffers get computed initializers (not mx.zeros placeholder)."""
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(4, 4)
+                # persistent=True → emitted as mx.zeros (filled by load_weights)
+                self.register_buffer("mask", torch.ones(4, 4))
+                # persistent=False → emitted with computed initializer
+                self.register_buffer("position_ids", torch.arange(16), persistent=False)
+                self.register_buffer("zeros_buf", torch.zeros(3, 5), persistent=False)
+
+            def forward(self, x):
+                return self.fc(x) * self.mask
+
+        result = generate(Model())
+        assert "self.mask = mx.zeros((4, 4))" in result.source  # persistent
+        assert "self.position_ids = mx.arange(16)" in result.source  # arange pattern
+        assert "self.zeros_buf = mx.zeros((3, 5)" in result.source  # zeros pattern
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+
 class TestMixedContainerStatelessOnly:
     """Sequential where all children are stateless skips."""
 
@@ -804,6 +1094,36 @@ class TestMakeTodoCallHelper:
         assert "MyLayer.forward() requires manual translation" in stub
         assert "raise NotImplementedError" in stub
         assert "def __call__" in stub
+
+
+# ── Config emission tests ─────────────────────────────────────────────────────
+
+
+class TestConfigEmission:
+    """self.config constants are injected when referenced in __call__."""
+
+    def test_config_emitted_when_referenced(self):
+        """HF-style model with config references gets SimpleNamespace in __init__."""
+        from torch2mlx.codegen import _extract_config_refs
+
+        source = "x = self.config.hidden_size + self.config.num_heads"
+        refs = _extract_config_refs(source)
+        assert refs == {"hidden_size", "num_heads"}
+
+    def test_config_not_emitted_when_absent(self):
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(4, 4)
+
+            def forward(self, x):
+                return self.fc(x)
+
+        result = generate(Model())
+        assert "SimpleNamespace" not in result.source
+        assert "self.config" not in result.source
 
 
 # ── AST rewriter tests ───────────────────────────────────────────────────────
@@ -1072,6 +1392,62 @@ class TestASTRewriter:
         assert ".contiguous()" not in result.source
 
 
+class TestToWithDtype:
+    """Issue 5: .to(dtype) → .astype(dtype), .to(device) still no-op."""
+
+    def test_to_with_dtype_becomes_astype(self):
+        """x.to(torch.float16) → x.astype(mx.float16)."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return x.to(torch.float16)
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "astype" in result.source
+        assert "mx.float16" in result.source
+        assert ".to(" not in result.source
+
+    def test_to_with_device_still_noop(self):
+        """x.to('cuda') → x (no-op, device string not a dtype)."""
+
+        class Model(nn.Module):
+            def forward(self, x):
+                return x.to("cuda")
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert ".to(" not in result.source
+        assert "astype" not in result.source
+
+
+class TestSelfDtypeAnnotated:
+    """Issue 5: self.dtype → mx.float32 with NEEDS_REVIEW annotation."""
+
+    def test_self_dtype_annotated(self):
+        class Model(nn.Module):
+            def forward(self, x):
+                return x.astype(self.dtype)
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "mx.float32" in result.source
+        assert result.confidence == Confidence.NEEDS_REVIEW
+        assert any("self.dtype" in note for _, _, note in result.annotations)
+
+    def test_device_annotated(self):
+        class Model(nn.Module):
+            def forward(self, x):
+                d = x.device  # noqa: F841
+                return x
+
+        result = _rewrite_forward_ast(Model())
+        assert result is not None
+        assert "SimpleNamespace" in result.source
+        assert result.confidence == Confidence.NEEDS_REVIEW
+        assert any(".device" in note for _, _, note in result.annotations)
+
+
 class TestASTCascade:
     """Tests for the fx → AST → TODO cascade."""
 
@@ -1182,3 +1558,43 @@ class TestConfidenceAnnotations:
 
         result = generate(Model())
         assert result.call_confidence in ("mechanical", "needs_review", "todo")
+
+
+class TestPostProcessors:
+    """Test post_processors parameter on generate()."""
+
+    def test_generate_no_hf_postprocess(self):
+        """Simple model with post_processors=[] produces valid code."""
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(10, 5)
+
+            def forward(self, x):
+                return self.fc(x)
+
+        result = generate(Model(), post_processors=[])
+        assert result.coverage == 1.0
+        ast.parse(result.source)
+
+    def test_custom_post_processor(self):
+        """Custom post-processor is called."""
+        from torch2mlx.codegen import generate
+
+        marker = "# CUSTOM_PP_MARKER"
+
+        def add_marker(source, model):
+            return source + "\n" + marker
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(5, 5)
+
+            def forward(self, x):
+                return self.fc(x)
+
+        result = generate(Model(), post_processors=[add_marker])
+        assert marker in result.source

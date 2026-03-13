@@ -134,6 +134,7 @@ def convert(
     output_path: str | Path,
     *,
     analyze_first: bool = True,
+    module_map: dict[str, str] | None = None,
 ) -> Path:
     """Full end-to-end conversion pipeline.
 
@@ -143,13 +144,16 @@ def convert(
         output_path: where to save the converted safetensors file
         analyze_first: if True and input is a Module, run analyzer first
                        and warn if coverage < 1.0
+        module_map: explicit prefix-to-rule mapping for weight transpositions.
+                    If None, auto-built from named_modules() (Module input)
+                    or empty with a warning (dict input).
 
     Returns:
         Path to the saved safetensors file
     """
     output_path = Path(output_path)
     flat_weights: dict[str, NDArray]
-    module_map: dict[str, str]
+    resolved_map: dict[str, str]
 
     if HAS_TORCH and isinstance(torch_model_or_state, nn.Module):
         model = torch_model_or_state
@@ -172,31 +176,44 @@ def convert(
         # models (e.g., nn.Conv1d directly) get their transpositions applied.
         # Root class is usually custom and absent from registry, so it's a no-op
         # for multi-layer models.
-        named_modules = [(name, type(m).__name__) for name, m in model.named_modules()]
+        named_modules_list = [(name, type(m).__name__) for name, m in model.named_modules()]
         # numpy-only from here on
         flat_weights = {k: v.detach().numpy() for k, v in model.state_dict().items()}
-        module_map = build_module_map(named_modules)
+        resolved_map = (
+            module_map if module_map is not None else build_module_map(named_modules_list)
+        )
 
     elif isinstance(torch_model_or_state, dict):
-        # Caller passed a flat state dict; no transpositions without a module map
         flat_weights = torch_model_or_state
-        module_map = {}
+        if module_map is not None:
+            resolved_map = module_map
+        else:
+            warnings.warn(
+                "No module_map provided for dict input; no weight transpositions will be applied",
+                stacklevel=2,
+            )
+            resolved_map = {}
 
     else:
         raise TypeError(
             f"Expected torch.nn.Module or dict, got {type(torch_model_or_state).__name__}"
         )
 
-    converted = convert_state_dict(flat_weights, module_map)
+    converted = convert_state_dict(flat_weights, resolved_map)
     state_dict.save_safetensors(converted, output_path)
     return output_path
 
 
-def load_converted(path: str | Path) -> dict[str, Any]:
-    """Load a converted model as a nested MLX-compatible parameter tree.
+def load_converted(path: str | Path, *, flat: bool = False) -> dict[str, Any]:
+    """Load a converted model's weights.
+
+    Args:
+        path: path to safetensors file
+        flat: if True, return flat dot-separated keys (for load_weights);
+              if False (default), return nested dict tree
 
     Returns:
-        Nested dict suitable for mlx.nn.Module.load_weights().
+        Flat or nested dict of numpy arrays.
     """
-    flat = state_dict.load_safetensors(path)
-    return state_dict.unflatten(flat)
+    loaded = state_dict.load_safetensors(path)
+    return loaded if flat else state_dict.unflatten(loaded)

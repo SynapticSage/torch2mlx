@@ -13,11 +13,17 @@ import ast as _ast
 import enum
 import inspect
 import operator
+import re as _re
 import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from torch2mlx.hf_compat import (
+    HF_METHOD_STUBS,
+    SCALAR_OVERRIDES,
+    hf_post_process,
+)
 from torch2mlx.op_mapping import DTYPE_REGISTRY, OP_REGISTRY
 
 try:
@@ -99,6 +105,7 @@ class _ClassDef:
     forward_sig: str  # original forward() signature for TODO stub
     call_body: str | None = None  # AST-rewritten __call__, None → TODO stub
     call_confidence: str = "todo"  # "mechanical" | "needs_review" | "todo"
+    extra_methods: str = ""  # Additional non-forward methods (e.g., ff_chunk)
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +150,41 @@ def _format_value(value: Any) -> str:
     if value is None:
         return "None"
     return repr(value)
+
+
+def _infer_buffer_initializer(buf: Any) -> str:
+    """Infer a computed initializer for a non-persistent buffer.
+
+    Detects common patterns: arange, zeros, ones, and falls back to
+    mx.array(literal) for small buffers or mx.zeros(shape) for large ones.
+    """
+    import numpy as _np
+
+    arr = buf.detach().cpu().numpy()
+    shape = tuple(arr.shape)
+    flat = arr.ravel()
+
+    # All zeros
+    if _np.all(flat == 0):
+        return f"mx.zeros({_format_value(shape)}, dtype=mx.int64)"
+
+    # All ones
+    if _np.all(flat == 1):
+        return f"mx.ones({_format_value(shape)}, dtype=mx.int64)"
+
+    # arange pattern: values are 0, 1, 2, ..., N-1 (possibly reshaped)
+    n = flat.size
+    if _np.array_equal(flat, _np.arange(n)):
+        if len(shape) == 1:
+            return f"mx.arange({n})"
+        return f"mx.reshape(mx.arange({n}), {_format_value(shape)})"
+
+    # Small buffer: emit literal array
+    if flat.size <= 64:
+        return f"mx.array({arr.tolist()})"
+
+    # Fallback: zeros with shape (will be overwritten if loaded from weights)
+    return f"mx.zeros({_format_value(shape)})"
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +506,35 @@ def _sanitize_name(name: str) -> str:
     return name
 
 
+def _dotted_to_access(target: str) -> str:
+    """Convert a dotted fx target to a Python attribute/index access chain.
+
+    Maps numeric path segments to index access so generated __call__ code
+    matches the list-based __init__ structure from container codegen.
+
+    Examples:
+        "layers.0.fc"  → "layers[0].fc"
+        "fc"           → "fc"
+        "0.linear"     → "layer_0.linear"  (numeric root gets sanitized)
+    """
+    parts = target.split(".")
+    result: list[str] = []
+    for i, part in enumerate(parts):
+        if part.isdigit():
+            if not result:
+                # Numeric root (from Sequential direct children) — sanitize
+                result.append(_sanitize_name(part))
+            else:
+                # Numeric after a named container → index access
+                result.append(f"[{part}]")
+        else:
+            if not result:
+                result.append(part)
+            else:
+                result.append(f".{part}")
+    return "".join(result)
+
+
 def _class_name_from_module(module: Any) -> str:
     """Derive a class name from a torch module."""
     name = type(module).__name__
@@ -480,9 +551,15 @@ def _class_name_from_module(module: Any) -> str:
 _FX_FUNCTION_MAP: dict[Any, str] = {}
 
 # PyTorch-only kwargs to strip from fx call_function nodes
-_FX_STRIP_KWARGS: frozenset[str] = frozenset({
-    "inplace", "device", "pin_memory", "requires_grad", "memory_format",
-})
+_FX_STRIP_KWARGS: frozenset[str] = frozenset(
+    {
+        "inplace",
+        "device",
+        "pin_memory",
+        "requires_grad",
+        "memory_format",
+    }
+)
 
 # Map torch method names to their string keys in OP_REGISTRY
 _FX_METHOD_MAP: dict[str, str] = {
@@ -607,14 +684,14 @@ def _translate_node(node: Any) -> str | None:
         return f"return {_node_arg_repr(args)}"
 
     if op == "get_attr":
-        return f"{node.name} = self.{node.target}"
+        return f"{node.name} = self.{_dotted_to_access(node.target)}"
 
     if op == "call_module":
         args_str = ", ".join(_node_arg_repr(a) for a in node.args)
         if node.kwargs:
             kw = ", ".join(f"{k}={_node_arg_repr(v)}" for k, v in node.kwargs.items())
             args_str = f"{args_str}, {kw}" if args_str else kw
-        target = _sanitize_name(node.target)
+        target = _dotted_to_access(node.target)
         return f"{node.name} = self.{target}({args_str})"
 
     if op == "call_function":
@@ -738,6 +815,29 @@ def _make_mx_attr(parts: str) -> _ast.expr:
     return node
 
 
+# Standard library / non-torch module names — never rewrite their method calls
+_STDLIB_MODULES = frozenset(
+    {
+        "math",
+        "os",
+        "sys",
+        "re",
+        "json",
+        "copy",
+        "functools",
+        "itertools",
+        "collections",
+        "logging",
+        "warnings",
+        "operator",
+        "typing",
+        "np",
+        "numpy",
+        "logger",
+    }
+)
+
+
 class _TorchToMLXRewriter(_ast.NodeTransformer):
     """Rewrite a torch forward() AST into an MLX __call__() AST."""
 
@@ -745,6 +845,7 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
         self.annotations: list[tuple[int, Confidence, str]] = []
         self.unmapped_calls: list[str] = []
         self._confidence = Confidence.MECHANICAL
+        self._needs_simplenamespace = False
 
     def _lower_confidence(self, level: Confidence) -> None:
         if _CONFIDENCE_ORDER[level] > _CONFIDENCE_ORDER[self._confidence]:
@@ -817,6 +918,37 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
                         attr=mlx_attr,
                         ctx=node.ctx,
                     )
+        # self.dtype → mx.float32  (default parameter dtype for inference)
+        if node.attr == "dtype" and _is_self_access(node.value):
+            self._annotate(
+                getattr(node, "lineno", 0),
+                Confidence.NEEDS_REVIEW,
+                "self.dtype assumed float32; verify model default dtype",
+            )
+            return _ast.Attribute(
+                value=_ast.Name(id="mx", ctx=_ast.Load()),
+                attr="float32",
+                ctx=node.ctx,
+            )
+        # x.device → SimpleNamespace(type="cpu")  (MLX unified memory)
+        # Handles both `x.device` and `x.device.type == 'cuda'` patterns
+        if node.attr == "device":
+            self._needs_simplenamespace = True
+            self._annotate(
+                getattr(node, "lineno", 0),
+                Confidence.NEEDS_REVIEW,
+                ".device replaced with SimpleNamespace; MLX uses unified memory",
+            )
+            return _ast.Call(
+                func=_ast.Name(id="SimpleNamespace", ctx=_ast.Load()),
+                args=[],
+                keywords=[
+                    _ast.keyword(
+                        arg="type",
+                        value=_ast.Constant(value="cpu"),
+                    ),
+                ],
+            )
         return node
 
     # --- Call: the main rewriting engine ---
@@ -826,9 +958,7 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
         self.generic_visit(node)
 
         # Strip device=/pin_memory=/requires_grad= from ALL calls
-        node.keywords = [
-            kw for kw in node.keywords if kw.arg not in self._STRIP_KWARGS
-        ]
+        node.keywords = [kw for kw in node.keywords if kw.arg not in self._STRIP_KWARGS]
 
         func = node.func
         if not isinstance(func, _ast.Attribute):
@@ -859,6 +989,10 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
         # F.func(args)
         if isinstance(func.value, _ast.Name) and func.value.id == "F":
             return self._rewrite_f_func(node, attr_name)
+
+        # Skip known non-torch module calls (math.sqrt, os.path, etc.)
+        if isinstance(func.value, _ast.Name) and func.value.id in _STDLIB_MODULES:
+            return node
 
         # x.method(args) — tensor methods
         return self._rewrite_method(node, attr_name)
@@ -925,11 +1059,30 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
         if mapping.mlx_op == "no_op":
             return node.args[0] if node.args else node
 
-        return _ast.Call(
+        rewritten = _ast.Call(
             func=_make_mx_attr(mapping.mlx_op),
             args=list(node.args),
             keywords=self._rename_kwargs(node.keywords, mapping.param_renames),
         )
+
+        # MLX's scaled_dot_product_attention requires `scale` kwarg.
+        # Compute it from the query's last dim: scale = q.shape[-1] ** -0.5
+        if func_name == "scaled_dot_product_attention" and node.args:
+            has_scale = any(kw.arg == "scale" for kw in rewritten.keywords)
+            if not has_scale:
+                q_arg = node.args[0]
+                scale_expr = _ast.BinOp(
+                    left=_ast.Subscript(
+                        value=_ast.Attribute(value=q_arg, attr="shape", ctx=_ast.Load()),
+                        slice=_ast.Constant(value=-1),
+                        ctx=_ast.Load(),
+                    ),
+                    op=_ast.Pow(),
+                    right=_ast.UnaryOp(op=_ast.USub(), operand=_ast.Constant(value=0.5)),
+                )
+                rewritten.keywords.append(_ast.keyword(arg="scale", value=scale_expr))
+
+        return rewritten
 
     # --- x.method() rewriting ---
 
@@ -954,6 +1107,8 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
             return _ast.Call(func=receiver, args=node.args, keywords=node.keywords)
         if method_name in ("masked_fill", "masked_fill_"):
             return self._handle_masked_fill(node)
+        if method_name == "expand_as":
+            return self._handle_expand_as(node)
 
         # Registry-mapped methods
         reg_key = _FX_METHOD_MAP.get(method_name)
@@ -969,6 +1124,21 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
 
         if mapping.mlx_op == "no_op":
             return receiver
+
+        # Methods whose varargs become a single tuple arg in MLX:
+        # x.view(a, b, c) → mx.reshape(x, (a, b, c))
+        # x.reshape(a, b, c) → mx.reshape(x, (a, b, c))
+        # x.expand(a, b, c) → mx.broadcast_to(x, (a, b, c))
+        # x.permute(0, 2, 1, 3) → mx.transpose(x, (0, 2, 1, 3))
+        # x.transpose(0, 1) → mx.swapaxes(x, 0, 1)  [2 args stays as-is]
+        _varargs_methods = ("view", "reshape", "expand", "permute")
+        if method_name in _varargs_methods and len(node.args) > 1:
+            shape_tuple = _ast.Tuple(elts=list(node.args), ctx=_ast.Load())
+            return _ast.Call(
+                func=_make_mx_attr(mapping.mlx_op),
+                args=[receiver, shape_tuple],
+                keywords=self._rename_kwargs(node.keywords, mapping.param_renames),
+            )
 
         # Method → function: prepend receiver as first arg
         return _ast.Call(
@@ -1022,15 +1192,60 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
         )
 
     def _handle_noop_method(self, node: _ast.Call) -> _ast.expr:
-        """x.contiguous() → x, x.to(...) → x, etc."""
+        """x.contiguous() → x, x.to(device) → x, x.to(dtype) → x.astype(dtype)."""
         method = node.func.attr
-        if method == "to" and node.args:
-            self._annotate(
-                getattr(node, "lineno", 0),
-                Confidence.NEEDS_REVIEW,
-                ".to() may be a dtype cast, not just device move",
-            )
-        return node.func.value
+        receiver = node.func.value
+
+        if method == "to":
+            # Check if first positional arg or dtype= kwarg is a dtype constant
+            dtype_node = None
+            if node.args:
+                arg = node.args[0]
+                # torch.float16, torch.float32, etc.
+                if (
+                    isinstance(arg, _ast.Attribute)
+                    and isinstance(arg.value, _ast.Name)
+                    and arg.value.id in ("torch", "mx")
+                ):
+                    dtype_key = f"torch.{arg.attr}"
+                    if dtype_key in DTYPE_REGISTRY:
+                        dtype_node = arg
+                # Already-converted mx.float16 etc.
+                elif (
+                    isinstance(arg, _ast.Attribute)
+                    and isinstance(arg.value, _ast.Name)
+                    and arg.value.id == "mx"
+                ):
+                    dtype_node = arg
+            # Check dtype= keyword
+            for kw in node.keywords:
+                if kw.arg == "dtype" and isinstance(kw.value, _ast.Attribute):
+                    dtype_node = kw.value
+                    break
+
+            if dtype_node is not None:
+                # Convert dtype to MLX equivalent
+                if isinstance(dtype_node.value, _ast.Name) and dtype_node.value.id == "torch":
+                    dtype_key = f"torch.{dtype_node.attr}"
+                    mapping = DTYPE_REGISTRY.get(dtype_key)
+                    if mapping and mapping.mlx_dtype != "unsupported":
+                        mlx_attr = mapping.mlx_dtype.replace("mx.", "")
+                        target = _ast.Attribute(
+                            value=_ast.Name(id="mx", ctx=_ast.Load()),
+                            attr=mlx_attr,
+                            ctx=_ast.Load(),
+                        )
+                    else:
+                        target = dtype_node
+                else:
+                    target = dtype_node
+                return _ast.Call(
+                    func=_ast.Attribute(value=receiver, attr="astype", ctx=_ast.Load()),
+                    args=[target],
+                    keywords=[],
+                )
+
+        return receiver
 
     def _handle_masked_fill(self, node: _ast.Call) -> _ast.expr:
         """x.masked_fill(mask, value) → mx.where(mask, value, x)."""
@@ -1048,10 +1263,34 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
             )
         return node
 
+    def _handle_expand_as(self, node: _ast.Call) -> _ast.expr:
+        """x.expand_as(y) → mx.broadcast_to(x, y.shape)."""
+        receiver = node.func.value
+        if node.args:
+            target = node.args[0]
+            return _ast.Call(
+                func=_make_mx_attr("mx.broadcast_to"),
+                args=[
+                    receiver,
+                    _ast.Attribute(value=target, attr="shape", ctx=_ast.Load()),
+                ],
+                keywords=[],
+            )
+        return node
+
     # --- Helpers ---
 
     # Keywords to strip from all rewritten calls (MLX unified memory)
-    _STRIP_KWARGS = frozenset({"device", "pin_memory", "requires_grad", "non_blocking"})
+    _STRIP_KWARGS = frozenset(
+        {
+            "device",
+            "pin_memory",
+            "requires_grad",
+            "non_blocking",
+            "dropout_p",
+            "is_causal",  # PyTorch SDPA kwargs not in MLX
+        }
+    )
 
     def _rename_kwargs(
         self,
@@ -1117,12 +1356,89 @@ def _format_ast_call(source: str, confidence: Confidence) -> str:
     return f"{header}\n{indented}"
 
 
-def _try_ast_for_classdef(child: Any) -> tuple[str | None, str]:
-    """Try AST rewrite for a helper class __call__."""
+def _rewrite_method_ast(method: Any) -> str | None:
+    """AST-rewrite a single method (non-forward) for MLX compatibility.
+
+    Returns rewritten source or None if unavailable.
+    """
+    try:
+        source = inspect.getsource(method)
+    except (OSError, TypeError):
+        return None
+
+    source = textwrap.dedent(source)
+    try:
+        tree = _ast.parse(source)
+    except SyntaxError:
+        return None
+
+    rewriter = _TorchToMLXRewriter()
+    # Don't rename the function (it's not forward→__call__)
+    # Override visit_FunctionDef to only strip annotations, not rename
+    original_visit = rewriter.visit_FunctionDef
+
+    def _keep_name(node: _ast.FunctionDef) -> _ast.FunctionDef:
+        orig_name = node.name
+        result = original_visit(node)
+        result.name = orig_name  # Keep original method name
+        return result
+
+    rewriter.visit_FunctionDef = _keep_name
+    tree = rewriter.visit(tree)
+    _ast.fix_missing_locations(tree)
+
+    try:
+        return _ast.unparse(tree)
+    except Exception:
+        return None
+
+
+def _get_extra_methods(module: Any, call_source: str | None) -> str:
+    """Find and rewrite non-forward methods referenced in the call body.
+
+    Catches both self.method() calls AND self.method references (callbacks).
+    """
+    if call_source is None:
+        return ""
+
+    # Match all self.X references — covers both calls and callback refs
+    all_refs = set(_re.findall(r"self\.(\w+)", call_source))
+    child_names = {name for name, _ in module.named_children()}
+    param_names = {name for name, _ in module.named_parameters(recurse=False)}
+    buffer_names = {name for name, _ in module.named_buffers(recurse=False)}
+    # Exclude submodules, params, buffers, known names, and HF stubs
+    exclude = (
+        child_names
+        | param_names
+        | buffer_names
+        | {"__init__", "__call__", "forward", "config", "training"}
+        | HF_METHOD_STUBS.keys()
+    )
+    candidates = all_refs - exclude
+
+    extra_source = ""
+    for method_name in sorted(candidates):
+        method = getattr(type(module), method_name, None)
+        if method is None or not callable(method):
+            continue
+        rewritten = _rewrite_method_ast(method)
+        if rewritten is not None:
+            indented = "\n".join(f"    {line}" for line in rewritten.split("\n"))
+            extra_source += f"\n{indented}\n"
+    return extra_source
+
+
+def _try_ast_for_classdef(child: Any) -> tuple[str | None, str, str]:
+    """Try AST rewrite for a helper class __call__ and extra methods.
+
+    Returns:
+        (call_body, confidence, extra_methods_source)
+    """
     rewrite = _rewrite_forward_ast(child)
     if rewrite is not None and rewrite.confidence != Confidence.BLOCKER:
-        return rewrite.source, rewrite.confidence.value
-    return None, "todo"
+        extra = _get_extra_methods(child, rewrite.source)
+        return rewrite.source, rewrite.confidence.value, extra
+    return None, "todo", ""
 
 
 # ---------------------------------------------------------------------------
@@ -1206,13 +1522,14 @@ def _walk_module(
                 todos.extend(sub_todos)
                 unmapped.extend(sub_unmapped)
                 if child_type not in seen_classes:
-                    cb, cc = _try_ast_for_classdef(child)
+                    cb, cc, em = _try_ast_for_classdef(child)
                     seen_classes[child_type] = _ClassDef(
                         name=child_type,
                         init_body="\n".join(sub_lines),
                         forward_sig=_get_forward_signature(child),
                         call_body=cb,
                         call_confidence=cc,
+                        extra_methods=em,
                     )
                 init_lines.append(f"        self.{safe_name} = {child_type}()")
             else:
@@ -1232,13 +1549,14 @@ def _walk_module(
                 todos.extend(sub_todos)
                 unmapped.extend(sub_unmapped)
                 if child_type not in seen_classes:
-                    cb, cc = _try_ast_for_classdef(child)
+                    cb, cc, em = _try_ast_for_classdef(child)
                     seen_classes[child_type] = _ClassDef(
                         name=child_type,
                         init_body="\n".join(sub_lines),
                         forward_sig=_get_forward_signature(child),
                         call_body=cb,
                         call_confidence=cc,
+                        extra_methods=em,
                     )
                 init_lines.append(f"        self.{safe_name} = {child_type}()")
             else:
@@ -1261,7 +1579,224 @@ def _walk_module(
         total += 1
         mapped += 1
 
+    # Emit orphan buffers (position_ids, causal masks, index tables, etc.)
+    # Persistent buffers: appear in state_dict, emit as mx.zeros (load_weights fills them)
+    # Non-persistent buffers: NOT in state_dict, emit with computed initializers
+    non_persistent = getattr(module, "_non_persistent_buffers_set", set())
+    for bname, buf in module.named_buffers(recurse=False):
+        if bname in child_names:
+            continue
+        safe_bname = _sanitize_name(bname)
+        shape = tuple(buf.shape)
+        if bname in non_persistent:
+            # Emit computed initializer for non-persistent buffers
+            init_lines.append(f"        self.{safe_bname} = {_infer_buffer_initializer(buf)}")
+        else:
+            init_lines.append(f"        self.{safe_bname} = mx.zeros({_format_value(shape)})")
+
+    # Emit plain scalar attributes (n_heads, dim, hidden_size, etc.)
+    # These are architectural constants set in __init__ that forward() references.
+    param_names = {n for n, _ in module.named_parameters(recurse=False)}
+    buffer_names = {n for n, _ in module.named_buffers(recurse=False)}
+    # "training" is a read-only property in mlx.nn.Module — skip it
+    skip_names = (
+        child_names
+        | param_names
+        | buffer_names
+        | {
+            "training",
+            "T_destination",
+            "_parameters",
+            "_buffers",
+            "_modules",
+            "_backward_hooks",
+            "_forward_hooks",
+            "_forward_pre_hooks",
+            "_state_dict_hooks",
+            "_load_state_dict_pre_hooks",
+            "_non_persistent_buffers_set",
+            "_is_full_backward_hook",
+        }
+    )
+    for attr_name, attr_val in vars(module).items():
+        if attr_name in skip_names or attr_name.startswith("_"):
+            continue
+        # Override known HF attributes that need different values in MLX
+        if attr_name in SCALAR_OVERRIDES:
+            init_lines.append(
+                f"        self.{_sanitize_name(attr_name)} = {SCALAR_OVERRIDES[attr_name]}"
+            )
+        elif isinstance(attr_val, (int, float, bool)):
+            init_lines.append(f"        self.{_sanitize_name(attr_name)} = {attr_val!r}")
+        elif isinstance(attr_val, str):
+            init_lines.append(f"        self.{_sanitize_name(attr_name)} = {attr_val!r}")
+        elif attr_val is None:
+            init_lines.append(f"        self.{_sanitize_name(attr_name)} = None")
+
     return init_lines, total, mapped, todos, unmapped
+
+
+def _module_fingerprint(module: Any) -> tuple:
+    """Hashable structural fingerprint for uniformity detection.
+
+    Compares direct children (names + types), direct parameters (names + shapes),
+    direct buffers (names + shapes), and scalar attributes.  Two modules with the
+    same class name but different sub-module structures or scalar constants
+    (e.g., self.scale=2.0 vs 4.0) produce different fingerprints.
+    """
+    children = tuple((n, type(c).__name__) for n, c in module.named_children())
+    params = tuple((n, tuple(p.shape)) for n, p in module.named_parameters(recurse=False))
+    buffers = tuple((n, tuple(b.shape)) for n, b in module.named_buffers(recurse=False))
+
+    # Scalar attributes — same filter as _walk_module's scalar emission
+    child_names = {n for n, _ in module.named_children()}
+    param_names = {n for n, _ in module.named_parameters(recurse=False)}
+    buffer_names = {n for n, _ in module.named_buffers(recurse=False)}
+    skip = child_names | param_names | buffer_names
+    scalars = tuple(
+        sorted(
+            (k, v)
+            for k, v in vars(module).items()
+            if k not in skip
+            and not k.startswith("_")
+            and isinstance(v, (int, float, bool, str, type(None)))
+        )
+    )
+    return (children, params, buffers, scalars)
+
+
+def _handle_nonuniform_container(
+    safe_name: str,
+    children: list[tuple[str, Any]],
+    seen_classes: dict[str, _ClassDef],
+) -> tuple[list[str], int, int, list[str], list[str]]:
+    """Handle containers where items share a type name but differ structurally.
+
+    Groups items by structural fingerprint, creates variant classes for each
+    unique structure, and emits a mixed list.  Weight keys use numeric indices
+    so MLX load_weights maps correctly regardless of variant class names.
+    """
+    base_type = type(children[0][1]).__name__
+    spec = CONSTRUCTOR_SPECS.get(base_type)
+
+    # --- Leaf items with constructor spec: emit individual constructors ---
+    if spec is not None:
+        items: list[str] = []
+        total = len(children)
+        mapped_count = 0
+        todos: list[str] = []
+        for child_name, child in children:
+            try:
+                items.append(_format_constructor(child, spec))
+                mapped_count += 1
+            except (AttributeError, TypeError) as exc:
+                items.append(f"None  # TODO: {base_type} — {exc}")
+                todos.append(f"{safe_name}[{child_name}]: {base_type} — {exc}")
+
+        init_lines = [f"        self.{safe_name} = ["]
+        for item in items:
+            init_lines.append(f"            {item},")
+        init_lines.append("        ]")
+        return init_lines, total, mapped_count, todos, []
+
+    # --- Composite items: group by fingerprint, create variant classes ---
+
+    # Collect union of all child names across all items — needed to emit
+    # self.attr = None for attributes absent in some variants but referenced
+    # in the shared forward() body (e.g., `if self.downsample is not None:`)
+    all_child_names: set[str] = set()
+    for _, child in children:
+        all_child_names.update(n for n, _ in child.named_children())
+        # Also include None-valued _modules entries
+        all_child_names.update(n for n, m in child._modules.items() if m is None)
+    all_child_names_frozen = frozenset(all_child_names)
+
+    fp_to_variant: dict[tuple, str] = {}
+    variant_leaves: dict[str, tuple[int, int]] = {}  # variant → (total, mapped)
+    todos_out: list[str] = []
+    unmapped_out: list[str] = []
+    variant_counter = 0
+
+    for _, child in children:
+        fp = _module_fingerprint(child)
+        if fp in fp_to_variant:
+            continue  # already registered this variant
+
+        # First encounter of this fingerprint — pick a name and walk
+        variant_name = base_type if variant_counter == 0 else f"{base_type}_v{variant_counter + 1}"
+        variant_counter += 1
+        fp_to_variant[fp] = variant_name
+
+        if list(child.named_children()):
+            sub_lines, sub_total, sub_mapped, sub_todos, sub_unmapped = _walk_module(
+                child, seen_classes
+            )
+            # Emit None for any absent sub-modules referenced by forward()
+            none_lines = _emit_none_modules(child, all_child_names_frozen)
+            all_lines = sub_lines + none_lines
+            if variant_name not in seen_classes:
+                cb, cc, em = _try_ast_for_classdef(child)
+                seen_classes[variant_name] = _ClassDef(
+                    name=variant_name,
+                    init_body="\n".join(all_lines),
+                    forward_sig=_get_forward_signature(child),
+                    call_body=cb,
+                    call_confidence=cc,
+                    extra_methods=em,
+                )
+            variant_leaves[variant_name] = (sub_total, sub_mapped)
+            todos_out.extend(sub_todos)
+            unmapped_out.extend(sub_unmapped)
+        else:
+            variant_leaves[variant_name] = (0, 0)
+
+    # Build the list with per-item variant types
+    items_out: list[str] = []
+    total = 0
+    mapped_count = 0
+    for _, child in children:
+        fp = _module_fingerprint(child)
+        variant_name = fp_to_variant[fp]
+        items_out.append(f"{variant_name}()")
+        vt, vm = variant_leaves[variant_name]
+        total += vt
+        mapped_count += vm
+
+    init_lines = [f"        self.{safe_name} = ["]
+    for item in items_out:
+        init_lines.append(f"            {item},")
+    init_lines.append("        ]")
+
+    return init_lines, total, mapped_count, todos_out, unmapped_out
+
+
+def _emit_none_modules(module: Any, all_child_names: frozenset[str] | None = None) -> list[str]:
+    """Emit `self.attr = None` for absent module slots.
+
+    Two sources of None attributes:
+    1. PyTorch _modules dict entries set to None (e.g., via register_module)
+    2. Child names present in other variants but absent in this one
+       (passed via all_child_names from non-uniform container detection)
+
+    The AST-rewritten __call__ may reference these attributes
+    (e.g., `if self.downsample is not None:`), so they must exist.
+    """
+    lines: list[str] = []
+    # Source 1: explicit None in _modules
+    for name, child in module._modules.items():
+        if child is None:
+            safe = _sanitize_name(name)
+            lines.append(f"        self.{safe} = None")
+
+    # Source 2: children present in other variants but absent here
+    if all_child_names is not None:
+        present = {n for n, _ in module.named_children()}
+        present.update(n for n, _ in module._modules.items() if _ is None)
+        for name in sorted(all_child_names - present):
+            safe = _sanitize_name(name)
+            lines.append(f"        self.{safe} = None")
+
+    return lines
 
 
 def _handle_container(
@@ -1272,6 +1807,7 @@ def _handle_container(
     """Handle ModuleList/Sequential/ModuleDict containers.
 
     Uniform type → list comprehension.  Mixed types → individual items.
+    Same-type but structurally different → variant classes.
 
     Returns:
         (init_lines, total_leaves, mapped_leaves, todos, unmapped)
@@ -1287,6 +1823,11 @@ def _handle_container(
     if len(set(child_types)) == 1:
         item_type = child_types[0]
         rep = children[0][1]
+
+        # Check structural uniformity — same class name ≠ same structure
+        fingerprints = [_module_fingerprint(c) for _, c in children]
+        if len(set(fingerprints)) > 1:
+            return _handle_nonuniform_container(safe_name, children, seen_classes)
 
         # Uniform leaf with constructor
         spec = CONSTRUCTOR_SPECS.get(item_type)
@@ -1304,13 +1845,14 @@ def _handle_container(
                 rep, seen_classes
             )
             if item_type not in seen_classes:
-                cb, cc = _try_ast_for_classdef(rep)
+                cb, cc, em = _try_ast_for_classdef(rep)
                 seen_classes[item_type] = _ClassDef(
                     name=item_type,
                     init_body="\n".join(sub_lines),
                     forward_sig=_get_forward_signature(rep),
                     call_body=cb,
                     call_confidence=cc,
+                    extra_methods=em,
                 )
             line = f"        self.{safe_name} = [{item_type}() for _ in range({count})]"
             return [line], sub_total * count, sub_mapped * count, sub_todos, sub_unmapped
@@ -1356,13 +1898,14 @@ def _handle_container(
             todos.extend(sub_todos)
             unmapped_list.extend(sub_unmapped)
             if child_type not in seen_classes:
-                cb, cc = _try_ast_for_classdef(child)
+                cb, cc, em = _try_ast_for_classdef(child)
                 seen_classes[child_type] = _ClassDef(
                     name=child_type,
                     init_body="\n".join(sub_lines),
                     forward_sig=_get_forward_signature(child),
                     call_body=cb,
                     call_confidence=cc,
+                    extra_methods=em,
                 )
             items.append(f"{child_type}()")
         elif child_type in CONSTRUCTOR_SPECS:
@@ -1396,12 +1939,138 @@ def _make_todo_call_helper(type_name: str, forward_sig: str) -> str:
     )
 
 
-def generate(model: Any, class_name: str | None = None) -> GeneratedCode:
+_CONFIG_ATTR_RE = _re.compile(r"self\.config\.(\w+)")
+
+
+def _extract_config_refs(source: str) -> set[str]:
+    """Extract all `self.config.X` attribute names from generated source."""
+    return set(_CONFIG_ATTR_RE.findall(source))
+
+
+def _emit_config_line(model: Any, config_attrs: set[str]) -> str | None:
+    """Build a `self.config = SimpleNamespace(...)` line from model.config.
+
+    Returns None if no config attributes are referenced or model has no config.
+    """
+    config = getattr(model, "config", None)
+    if config is None or not config_attrs:
+        return None
+
+    parts: list[str] = []
+    for attr in sorted(config_attrs):
+        val = getattr(config, attr, None)
+        if val is None:
+            parts.append(f"{attr}=None")
+        elif isinstance(val, bool):
+            parts.append(f"{attr}={val}")
+        elif isinstance(val, int):
+            parts.append(f"{attr}={val}")
+        elif isinstance(val, float):
+            parts.append(f"{attr}={val}")
+        elif isinstance(val, str):
+            parts.append(f"{attr}={val!r}")
+        else:
+            parts.append(f"{attr}={val!r}")
+
+    if not parts:
+        return None
+
+    joined = ", ".join(parts)
+    return f"        self.config = SimpleNamespace({joined})"
+
+
+def _inject_config_into_source(source: str, model: Any) -> str:
+    """Post-process generated source to inject config constants where needed.
+
+    Scans each class body for self.config.X references and injects a
+    SimpleNamespace with the relevant values.  Adds the import if needed.
+    """
+    config = getattr(model, "config", None)
+    if config is None:
+        return source
+
+    all_refs = _extract_config_refs(source)
+    if not all_refs:
+        return source
+
+    # Build per-class config lines by scanning class bodies
+    lines = source.split("\n")
+    result_lines: list[str] = []
+    needs_import = False
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        result_lines.append(line)
+
+        # Detect class definitions and find their super().__init__() call
+        if line.strip().startswith("class ") and "(nn.Module):" in line:
+            # Collect this class's body to check for self.config refs
+            class_start = i
+            j = i + 1
+            # Find the end of __init__ (next def or class or end of indent)
+            init_end = None
+            while j < len(lines):
+                if lines[j].strip() == "super().__init__()":
+                    init_end = j
+                    break
+                j += 1
+
+            if init_end is not None:
+                # Scan the rest of the class for self.config refs
+                class_refs: set[str] = set()
+                k = class_start
+                while k < len(lines):
+                    if (
+                        k > class_start
+                        and lines[k].strip().startswith("class ")
+                        and "(nn.Module):" in lines[k]
+                    ):
+                        break
+                    class_refs.update(_CONFIG_ATTR_RE.findall(lines[k]))
+                    k += 1
+
+                if class_refs:
+                    config_line = _emit_config_line(model, class_refs)
+                    if config_line is not None:
+                        # Copy lines up to and including super().__init__()
+                        for m in range(i + 1, init_end + 1):
+                            result_lines.append(lines[m])
+                        result_lines.append(config_line)
+                        needs_import = True
+                        i = init_end + 1
+                        continue
+
+        i += 1
+
+    if needs_import:
+        # Add SimpleNamespace import after the existing imports
+        import_line = "from types import SimpleNamespace\n"
+        # Insert after "import mlx.nn as nn"
+        final = "\n".join(result_lines)
+        final = final.replace(
+            "import mlx.nn as nn\n",
+            "import mlx.nn as nn\n" + import_line,
+        )
+        return final
+
+    return source
+
+
+def generate(
+    model: Any,
+    class_name: str | None = None,
+    *,
+    post_processors: list[Any] | None = None,
+) -> GeneratedCode:
     """Generate MLX module source code from a torch.nn.Module.
 
     Args:
         model: a torch.nn.Module instance
         class_name: name for the generated class (default: derived from model)
+        post_processors: list of callables ``(source, model) -> source`` applied
+            after assembly.  Defaults to ``[hf_post_process]``.  Pass ``[]``
+            to disable HF-specific post-processing.
 
     Returns:
         GeneratedCode with the complete .py source
@@ -1482,11 +2151,13 @@ def generate(model: Any, class_name: str | None = None) -> GeneratedCode:
             call_str = _format_ast_call(cls_def.call_body, Confidence(cls_def.call_confidence))
         else:
             call_str = _make_todo_call_helper(cls_def.name, cls_def.forward_sig)
+        extra = cls_def.extra_methods if cls_def.extra_methods else ""
         helper_source += (
             f"class {cls_def.name}(nn.Module):\n"
             f"    def __init__(self) -> None:\n"
             f"        super().__init__()\n"
             f"{cls_init}\n\n"
+            f"{extra}"
             f"{call_str}\n\n\n"
         )
 
@@ -1504,6 +2175,39 @@ def generate(model: Any, class_name: str | None = None) -> GeneratedCode:
         f"{init_body}\n\n"
         f"{call_method}\n"
     )
+
+    # Post-process: inject self.config = SimpleNamespace(...) where referenced
+    source = _inject_config_into_source(source, model)
+
+    # Apply configurable post-processors (default: HF compat)
+    if post_processors is None:
+        post_processors = [hf_post_process]
+    for pp in post_processors:
+        source = pp(source, model)
+
+    # Ensure SimpleNamespace import if used (by config injection or .device rewrite)
+    if "SimpleNamespace" in source and "from types import SimpleNamespace" not in source:
+        source = source.replace(
+            "import mlx.nn as nn\n",
+            "import mlx.nn as nn\nfrom types import SimpleNamespace\n",
+        )
+
+    # Add typing imports if type annotations reference them
+    _typing_names = {"Optional", "Union", "Tuple", "List", "Dict"}
+    used_typing = [t for t in _typing_names if t in source]
+    if used_typing and "from typing import" not in source:
+        typing_import = f"from typing import {', '.join(sorted(used_typing))}\n"
+        source = source.replace(
+            "import mlx.core as mx\n",
+            f"import mlx.core as mx\n{typing_import}",
+        )
+
+    # Add stdlib imports when referenced in generated code
+    if "math." in source and "import math" not in source:
+        source = source.replace(
+            "import mlx.core as mx\n",
+            "import math\nimport mlx.core as mx\n",
+        )
 
     return GeneratedCode(
         source=source,

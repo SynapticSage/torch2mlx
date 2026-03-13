@@ -173,3 +173,69 @@ class TestBlockerDetection:
         with pytest.raises(ImportError, match="torch is required"):
             mod.analyze(nn.Linear(2, 2))
         monkeypatch.setattr(mod, "HAS_TORCH", original)
+
+
+class TestBareModuleCoverage:
+    """Bare modules (no children) should report correct coverage."""
+
+    def test_bare_linear_coverage(self):
+        """nn.Linear is in registry → 100% coverage."""
+        report = analyze(nn.Linear(4, 4))
+        assert report.total_layers == 1
+        assert report.mapped_layers == 1
+        assert report.coverage == 1.0
+
+    def test_bare_unknown_coverage(self):
+        """Unknown bare module → 0% coverage."""
+
+        class CustomOp(nn.Module):
+            def forward(self, x):
+                return x * 2
+
+        report = analyze(CustomOp())
+        assert report.total_layers == 1
+        assert report.mapped_layers == 0
+        assert report.coverage == 0.0
+        assert "CustomOp" in report.unmapped_layers
+
+
+class TestBlockersRecursive:
+    """detect_blockers scans all submodules, not just root."""
+
+    def test_blockers_found_in_child(self):
+        class InPlaceChild(nn.Module):
+            def forward(self, x, y):
+                x.copy_(y)
+                return x
+
+        class Wrapper(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.child = InPlaceChild()
+
+            def forward(self, x, y):
+                return self.child(x, y)
+
+        blockers = detect_blockers(Wrapper())
+        assert any(".copy_()" in b for b in blockers)
+
+    def test_blockers_deduplicated(self):
+        """Same blocker in multiple children reported only once."""
+
+        class InPlaceChild(nn.Module):
+            def forward(self, x, y):
+                x.copy_(y)
+                return x
+
+        class Wrapper(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.a = InPlaceChild()
+                self.b = InPlaceChild()
+
+            def forward(self, x, y):
+                return self.a(x, y) + self.b(x, y)
+
+        blockers = detect_blockers(Wrapper())
+        copy_blockers = [b for b in blockers if ".copy_()" in b]
+        assert len(copy_blockers) == 1

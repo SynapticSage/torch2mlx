@@ -52,34 +52,20 @@ _BLOCKER_PATTERNS: list[tuple[str, str]] = [
 ]
 
 
-def detect_blockers(module: object) -> list[str]:
-    """Detect patterns that prevent automatic conversion.
+def _scan_forward_source(source: str) -> list[str]:
+    """Scan a single forward() source for blocker patterns.
 
-    Inspects the module's forward() source for known blocker patterns.
-    Silently skips modules where source is unavailable (e.g., built-ins).
+    Returns a list of blocker descriptions found in the source.
     """
     blockers: list[str] = []
-    forward = getattr(module, "forward", None)
-    if forward is None:
-        return blockers
-
-    try:
-        source = inspect.getsource(forward)
-    except (OSError, TypeError):
-        return blockers
-
     for pattern, description in _BLOCKER_PATTERNS:
         if pattern in source:
             blockers.append(description)
 
-    # Heuristic: tensor in-place index assignment (x[i] = v style)
-    # Only flag lines that look like tensor mutations (exclude dict/list patterns)
     for line in source.splitlines():
         stripped = line.strip()
-        # Skip comments and obvious non-tensor assignments
         if stripped.startswith("#"):
             continue
-        # += on a line that isn't a simple counter (heuristic)
         if (
             "+=" in stripped
             and "total" not in stripped
@@ -87,6 +73,38 @@ def detect_blockers(module: object) -> list[str]:
             and "i +=" not in stripped
         ):
             desc = "In-place operation: += assignment found in forward()"
+            if desc not in blockers:
+                blockers.append(desc)
+
+    return blockers
+
+
+def detect_blockers(module: object) -> list[str]:
+    """Detect patterns that prevent automatic conversion.
+
+    Inspects forward() source for the root module and all submodules.
+    Silently skips modules where source is unavailable (e.g., built-ins).
+    """
+    seen_sources: set[int] = set()
+    blockers: list[str] = []
+
+    for _, mod in module.named_modules() if hasattr(module, "named_modules") else [(None, module)]:
+        forward = getattr(mod, "forward", None)
+        if forward is None:
+            continue
+
+        # Deduplicate by function identity (same class → same source)
+        fwd_id = id(type(mod).forward)
+        if fwd_id in seen_sources:
+            continue
+        seen_sources.add(fwd_id)
+
+        try:
+            source = inspect.getsource(forward)
+        except (OSError, TypeError):
+            continue
+
+        for desc in _scan_forward_source(source):
             if desc not in blockers:
                 blockers.append(desc)
 
@@ -132,6 +150,15 @@ def analyze(module: object) -> PortabilityReport:
         else:
             if class_name not in report.unmapped_layers:
                 report.unmapped_layers.append(class_name)
+
+    # Bare module (no children): count the root itself as a layer
+    if report.total_layers == 0:
+        root_name = type(module).__name__
+        report.total_layers = 1
+        if lookup(root_name) is not None:
+            report.mapped_layers = 1
+        else:
+            report.unmapped_layers.append(root_name)
 
     report.blockers = detect_blockers(module)
     return report

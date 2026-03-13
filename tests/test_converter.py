@@ -249,6 +249,61 @@ def test_state_dict_roundtrip_conv2d():
     np.testing.assert_array_equal(pytorch_state["conv.bias"], bias)
 
 
+@requires_torch
+def test_dict_with_module_map_transposes(tmp_path):
+    """Dict input with explicit module_map applies transpositions."""
+    arr = np.zeros((8, 3, 5, 5), dtype=np.float32)
+    flat = {"conv.weight": arr}
+    out = tmp_path / "dict_map.safetensors"
+    module_map = {"conv": "conv2d"}
+    convert(flat, out, module_map=module_map)
+
+    nested = load_converted(out)
+    # conv2d: [O, I, H, W] → [O, H, W, I]
+    assert nested["conv"]["weight"].shape == (8, 5, 5, 3)
+
+
+@requires_torch
+def test_dict_without_module_map_warns(tmp_path):
+    """Dict input without module_map warns about no transpositions."""
+    import warnings as _warnings
+
+    flat = {"fc.weight": np.zeros((4, 2), dtype=np.float32)}
+    out = tmp_path / "dict_warn.safetensors"
+    with _warnings.catch_warnings(record=True) as w:
+        _warnings.simplefilter("always")
+        convert(flat, out)
+        assert any("No module_map" in str(warning.message) for warning in w)
+
+
+def test_load_converted_flat_mode(tmp_path):
+    """flat=True returns flat dot-separated keys."""
+    flat = {
+        "encoder.fc.weight": np.zeros((10, 5), dtype=np.float32),
+        "encoder.fc.bias": np.zeros((10,), dtype=np.float32),
+    }
+    out = tmp_path / "model.safetensors"
+    save_safetensors(flat, out)
+
+    result = load_converted(out, flat=True)
+    assert "encoder.fc.weight" in result
+    assert "encoder.fc.bias" in result
+    assert result["encoder.fc.weight"].shape == (10, 5)
+
+
+def test_load_converted_default_nested(tmp_path):
+    """Default (flat=False) returns nested dict tree."""
+    flat = {
+        "encoder.fc.weight": np.zeros((10, 5), dtype=np.float32),
+    }
+    out = tmp_path / "model.safetensors"
+    save_safetensors(flat, out)
+
+    result = load_converted(out)
+    assert "encoder" in result
+    assert "fc" in result["encoder"]
+
+
 def test_state_dict_roundtrip_mixed_layers():
     """Roundtrip with multiple layer types in one state dict."""
     rng = np.random.default_rng(123)

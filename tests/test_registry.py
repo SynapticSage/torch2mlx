@@ -143,7 +143,11 @@ EXPECTED_OPS = [
     # F.* (additional)
     ("F.dropout", "no_op", {}),
     ("F.pad", "mx.pad", {}),
-    ("F.scaled_dot_product_attention", "mx.fast.scaled_dot_product_attention", {"attn_mask": "mask"}),
+    (
+        "F.scaled_dot_product_attention",
+        "mx.fast.scaled_dot_product_attention",
+        {"attn_mask": "mask"},
+    ),
     # More torch.* functions (HF models)
     ("torch.bmm", "mx.matmul", {}),
     ("torch.flatten", "mx.flatten", {}),

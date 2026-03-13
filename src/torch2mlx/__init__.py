@@ -29,6 +29,7 @@ def export(
     path: str | Path,
     *,
     analyze_first: bool = True,
+    module_map: dict[str, str] | None = None,
 ) -> Path:
     """Convert a PyTorch model to MLX-compatible safetensors.
 
@@ -38,11 +39,12 @@ def export(
         model: a torch.nn.Module or flat state dict (numpy arrays)
         path: output safetensors file path
         analyze_first: run portability analysis before converting
+        module_map: explicit prefix-to-rule mapping for weight transpositions
 
     Returns:
         Path to the saved safetensors file
     """
-    return convert(model, path, analyze_first=analyze_first)
+    return convert(model, path, analyze_first=analyze_first, module_map=module_map)
 
 
 __all__ = [
