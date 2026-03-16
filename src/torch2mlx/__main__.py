@@ -137,7 +137,11 @@ def main(argv: list[str] | None = None) -> None:
         except ImportError:
             pass  # No torch — skip analysis silently
 
-    convert(data, output_file, analyze_first=False)  # We already analyzed above
+    # Pass module_map={} for dict inputs to suppress the "no module_map" warning —
+    # the CLI user chose dict mode explicitly, and we already analyzed if applicable.
+    convert(
+        data, output_file, analyze_first=False, module_map={} if isinstance(data, dict) else None
+    )
     n_params = len(sd.load_safetensors(output_file))
     print(f"Converted {n_params} parameters -> {output_file}")
 
