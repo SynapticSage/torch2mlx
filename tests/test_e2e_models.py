@@ -152,6 +152,30 @@ def test_cli_convert_safetensors(tmp_path):
     assert nested["fc"]["weight"].shape == (4, 2)
 
 
+@requires_torch
+def test_cli_pt_state_dict_warns_no_module_map(tmp_path):
+    """CLI emits a warning when converting a .pt state_dict (no module tree)."""
+    import warnings
+
+    from torch2mlx.__main__ import main
+
+    # Save a Conv2d state_dict to .pt — needs transposition but CLI has no module tree
+    model = nn.Conv2d(3, 16, kernel_size=3)
+    input_file = tmp_path / "conv.pt"
+    torch.save(model.state_dict(), input_file)
+
+    output_dir = tmp_path / "output"
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        main([str(input_file), str(output_dir)])
+        warns = [x for x in w if "no module_map" in str(x.message).lower()]
+        assert len(warns) > 0, "Expected 'no module_map' warning for .pt state_dict"
+
+    # Verify output was still produced (weights are NOT transposed since no map)
+    output_file = output_dir / "conv.safetensors"
+    assert output_file.exists()
+
+
 def test_cli_missing_file(tmp_path):
     """CLI exits with error for missing input file."""
     from torch2mlx.__main__ import main

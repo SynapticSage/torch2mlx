@@ -332,8 +332,17 @@ class TestHFCodegenE2E:
         exec(data["result"].source, ns)
         mlx_model = ns[cls_name]()
         mlx_model.load_weights(data["weights"], strict=False)
-        # Sanity check: all these HF models have many weight tensors
-        assert data["n_weights"] > 50, f"{cls_name}: only {data['n_weights']} weights"
+        # Verify converted weight count is close to the model's parameter count.
+        # Small gap allowed: codegen may emit zero-initialized buffers (e.g.
+        # position_ids) that aren't in PyTorch's state_dict.
+        from mlx.utils import tree_flatten
+
+        n_model_params = len(tree_flatten(mlx_model.parameters()))
+        gap = n_model_params - data["n_weights"]
+        assert gap <= 5, (
+            f"{cls_name}: converted {data['n_weights']} weights but model has "
+            f"{n_model_params} parameters (gap: {gap})"
+        )
 
     @pytest.mark.parametrize("cls_name,checkpoint", _HF_MODELS)
     def test_has_helper_classes(self, cls_name, checkpoint, _hf_cache):

@@ -137,10 +137,15 @@ def main(argv: list[str] | None = None) -> None:
         except ImportError:
             pass  # No torch — skip analysis silently
 
-    # Pass module_map={} for dict inputs to suppress the "no module_map" warning —
-    # the CLI user chose dict mode explicitly, and we already analyzed if applicable.
+    # .safetensors inputs are already in final layout (no module tree) — suppress
+    # the "no module_map" warning.  .pt/.pth state_dict saves may still need
+    # weight transpositions (e.g. Conv2d [O,I,H,W] → [O,H,W,I]), so let the
+    # converter warn when no module_map is available.
     convert(
-        data, output_file, analyze_first=False, module_map={} if isinstance(data, dict) else None
+        data,
+        output_file,
+        analyze_first=False,
+        module_map={} if suffix == ".safetensors" else None,
     )
     n_params = len(sd.load_safetensors(output_file))
     print(f"Converted {n_params} parameters -> {output_file}")
