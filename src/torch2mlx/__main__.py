@@ -72,7 +72,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--codegen",
         action="store_true",
-        help="Generate MLX module .py file alongside safetensors (requires torch, .pt/.pth input)",
+        help="[experimental] Generate MLX module .py file alongside safetensors — "
+        "output may need manual review (requires torch, .pt/.pth input)",
     )
     args = parser.parse_args(argv)
 

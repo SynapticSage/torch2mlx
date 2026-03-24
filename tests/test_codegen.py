@@ -732,6 +732,29 @@ class TestCoverageCountsLeaves:
         # coverage property returns init_coverage
         assert result.coverage == m.init_coverage
 
+    def test_call_coverage_tracks_forward_ops(self):
+        """call_coverage reflects fraction of forward() ops rewritten."""
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(10, 5)
+
+            def forward(self, x):
+                return torch.relu(self.fc(x))
+
+        result = generate(Model())
+        m = result.coverage_metrics
+        # AST-rewritten models should have op counts
+        if result.ast_rewritten:
+            assert m.total_ops > 0
+            assert m.mapped_ops > 0
+            assert m.call_coverage == pytest.approx(m.mapped_ops / m.total_ops)
+        # fx-traced models don't track ops yet (total_ops=0 → coverage=1.0)
+        elif result.traced:
+            assert m.call_coverage == 1.0
+
 
 # ── Edge case tests (skeptic review) ─────────────────────────────────────────
 

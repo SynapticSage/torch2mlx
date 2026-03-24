@@ -80,6 +80,8 @@ class RewriteResult:
     confidence: Confidence  # Overall confidence
     annotations: list[tuple[int, Confidence, str]]  # (line, level, note)
     unmapped_calls: list[str]  # Torch APIs not in OP_REGISTRY
+    total_ops: int = 0  # Total torch/F/method calls encountered
+    mapped_ops: int = 0  # Successfully rewritten ops
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,8 @@ class CoverageMetrics:
     mapped_leaves: int  # Non-None spec — real constructor emitted
     skipped_leaves: int  # None spec — Identity, DropPath, RoPE, containers, etc.
     unmapped_leaves: int  # Not in CONSTRUCTOR_SPECS at all
+    total_ops: int = 0  # Torch/F/method calls encountered in forward()
+    mapped_ops: int = 0  # Successfully rewritten ops
 
     @property
     def init_coverage(self) -> float:
@@ -107,6 +111,11 @@ class CoverageMetrics:
         if self.total_leaves == 0:
             return 1.0
         return (self.mapped_leaves + self.skipped_leaves) / self.total_leaves
+
+    @property
+    def call_coverage(self) -> float:
+        """Fraction of forward() ops successfully rewritten."""
+        return self.mapped_ops / self.total_ops if self.total_ops > 0 else 1.0
 
 
 @dataclass
@@ -938,6 +947,8 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
     def __init__(self) -> None:
         self.annotations: list[tuple[int, Confidence, str]] = []
         self.unmapped_calls: list[str] = []
+        self.total_ops: int = 0
+        self.mapped_ops: int = 0
         self._confidence = Confidence.MECHANICAL
         self._needs_simplenamespace = False
 
@@ -1138,9 +1149,11 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
     # --- torch.func() rewriting ---
 
     def _rewrite_torch_func(self, node: _ast.Call, func_name: str) -> _ast.expr:
+        self.total_ops += 1
         # torch.split(x, chunk_size, dim) — needs semantic translation
         if func_name == "split" and len(node.args) >= 2:
             tensor = node.args[0]
+            self.mapped_ops += 1
             return self._handle_split(tensor, list(node.args[1:]), node.keywords)
 
         reg_key = f"torch.{func_name}"
@@ -1150,6 +1163,7 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
             self._lower_confidence(Confidence.NEEDS_REVIEW)
             return node
 
+        self.mapped_ops += 1
         if mapping.mlx_op == "no_op":
             return node.args[0] if node.args else node
 
@@ -1162,6 +1176,7 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
     # --- F.func() rewriting ---
 
     def _rewrite_f_func(self, node: _ast.Call, func_name: str) -> _ast.expr:
+        self.total_ops += 1
         reg_key = f"F.{func_name}"
         mapping = OP_REGISTRY.get(reg_key)
         if mapping is None:
@@ -1169,6 +1184,7 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
             self._lower_confidence(Confidence.NEEDS_REVIEW)
             return node
 
+        self.mapped_ops += 1
         if mapping.mlx_op == "no_op":
             return node.args[0] if node.args else node
 
@@ -1235,7 +1251,29 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
     def _rewrite_method(self, node: _ast.Call, method_name: str) -> _ast.expr:
         receiver = node.func.value
 
-        # Special methods
+        # Special methods (all are known torch tensor methods → counted as mapped)
+        if (
+            method_name
+            in (
+                "split",
+                "size",
+                "dim",
+                "numel",
+                "type_as",
+                "forward",
+                "expand_as",
+            )
+            or method_name in _CAST_DTYPES
+            or method_name in _NOOP_METHODS
+            or method_name
+            in (
+                "masked_fill",
+                "masked_fill_",
+            )
+        ):
+            self.total_ops += 1
+            self.mapped_ops += 1
+
         if method_name == "split":
             return self._handle_split(receiver, node.args, node.keywords)
         if method_name == "size":
@@ -1264,11 +1302,14 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
             # Not a known tensor method — leave as-is (could be dict/list method)
             return node
 
+        self.total_ops += 1
         mapping = OP_REGISTRY.get(reg_key)
         if mapping is None:
             self.unmapped_calls.append(method_name)
             self._lower_confidence(Confidence.NEEDS_REVIEW)
             return node
+
+        self.mapped_ops += 1
 
         if mapping.mlx_op == "no_op":
             return receiver
@@ -1566,6 +1607,8 @@ def _rewrite_forward_ast(module: Any) -> RewriteResult | None:
         confidence=confidence,
         annotations=rewriter.annotations,
         unmapped_calls=rewriter.unmapped_calls,
+        total_ops=rewriter.total_ops,
+        mapped_ops=rewriter.mapped_ops,
     )
 
 
@@ -2317,7 +2360,11 @@ def generate(
     *,
     post_processors: list[Any] | None = None,
 ) -> GeneratedCode:
-    """Generate MLX module source code from a torch.nn.Module.
+    """Generate MLX module source code from a torch.nn.Module (experimental).
+
+    Output is an assisted port — treat as a starting point for manual review,
+    not a finished product.  Some op lowerings are approximate; check
+    ``result.coverage_metrics`` and ``result.call_confidence`` for diagnostics.
 
     Args:
         model: a torch.nn.Module instance
@@ -2369,17 +2416,15 @@ def generate(
             model, seen_classes
         )
 
-    metrics = CoverageMetrics(
-        total_leaves=total_leaves,
-        mapped_leaves=mapped_leaves,
-        skipped_leaves=skipped_leaves,
-        unmapped_leaves=total_leaves - mapped_leaves - skipped_leaves,
-    )
+    # metrics is constructed after __call__ cascade so we can include op counts
+    metrics = None  # set after __call__ generation
 
     # __call__ generation cascade: fx trace → AST rewrite → TODO stub
     traced = False
     ast_rewritten = False
     call_confidence = "todo"
+    forward_total_ops = 0
+    forward_mapped_ops = 0
 
     # 1. Try fx trace (works for simple traceable models)
     graph_module = _try_trace(model)
@@ -2401,11 +2446,22 @@ def generate(
             ast_rewritten = True
             call_confidence = rewrite.confidence.value
             root_extra_methods = _get_extra_methods(model, rewrite.source)
+            forward_total_ops = rewrite.total_ops
+            forward_mapped_ops = rewrite.mapped_ops
             # Merge unmapped calls into todos
             for call in rewrite.unmapped_calls:
                 todos.append(f"__call__: unmapped call {call}")
         else:
             call_method = _make_todo_call(model)
+
+    metrics = CoverageMetrics(
+        total_leaves=total_leaves,
+        mapped_leaves=mapped_leaves,
+        skipped_leaves=skipped_leaves,
+        unmapped_leaves=total_leaves - mapped_leaves - skipped_leaves,
+        total_ops=forward_total_ops,
+        mapped_ops=forward_mapped_ops,
+    )
 
     # Assemble helper class source (post-order: deepest first)
     helper_source = ""

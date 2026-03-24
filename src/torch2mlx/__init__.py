@@ -1,10 +1,11 @@
 """torch2mlx — Translate PyTorch models to Apple's MLX framework.
 
-Approach: Module-Tree Walk + Weight Convert
-  1. Walk torch.nn.Module tree, map each layer via registry
-  2. Convert state dict (transpositions, key restructuring)
-  3. Load weights into equivalent MLX modules
-  4. Verify numerical equivalence
+Stable:
+  - Weight conversion (convert, load_converted, export)
+  - Portability analysis (analyze)
+
+Experimental:
+  - Code generation (generate) — assisted porting, output may need manual review
 
 Public API::
 

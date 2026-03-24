@@ -16,9 +16,9 @@ A PyTorch-to-MLX lowering pipeline with three products:
 
 2. **Portability analysis** (heuristic) — walks the module tree and reports what percentage of layers have registry mappings. Scans `forward()` source for common blocker _patterns_ (`.copy_()`, `+=`, custom autograd) via string/regex matching. This catches many issues but is not a semantic checker — it won't find runtime-only problems like shape mismatches or dynamic dispatch.
 
-3. **Code generation** (heuristic) — emits an `mlx.nn.Module` `.py` file with `__init__` wired from the module tree and `__call__` translated via a 3-tier cascade: `torch.fx` tracing → syntactic AST rewrite → TODO stub. The AST rewriter mechanically renames `torch.*` → `mx.*` using an op registry; operations not in the registry are flagged but may require manual fixes.
+3. **Code generation** (experimental) — emits an `mlx.nn.Module` `.py` file with `__init__` wired from the module tree and `__call__` translated via a 3-tier cascade: `torch.fx` tracing → syntactic AST rewrite → TODO stub. The AST rewriter mechanically renames `torch.*` → `mx.*` using an op registry; operations not in the registry are flagged but may require manual fixes. Some op lowerings are approximate (e.g., attention, activation variants) — treat generated code as a starting point for manual review, not a finished product.
 
-The first product is the most mature. The latter two are pattern-based heuristics that work well on common architectures but don't guarantee runnable output for arbitrary models.
+**Weight conversion is the stable product.** The analyzer is a triage tool, and the code generator is an assisted porting layer — not yet a general PyTorch→MLX compiler.
 
 ## Quickstart
 
@@ -45,11 +45,11 @@ torch2mlx.convert(model, "weights.safetensors")
 params = torch2mlx.load_converted("weights.safetensors", flat=True)
 mlx_model.load_weights(list(params.items()))
 
-# Generate MLX module source code
+# Generate MLX module source code (experimental — review output before use)
 result = torch2mlx.generate(model)
 print(result.source)          # .py file (may include TODO stubs for unmapped ops)
-print(result.coverage)        # fraction of leaf modules with constructor specs
-print(result.traced)          # True if torch.fx succeeded; else check ast_rewritten
+print(result.coverage)        # init_coverage: fraction with real constructor code
+print(result.coverage_metrics.registry_coverage)  # includes stateless/skipped leaves
 print(result.call_confidence) # "mechanical", "needs_review", or "todo"
 ```
 
@@ -62,7 +62,7 @@ python -m torch2mlx model.pt output/
 # Analyze only (no conversion)
 python -m torch2mlx model.pt --analyze-only
 
-# Convert + generate MLX module source
+# Convert + generate MLX module source (experimental — review before use)
 python -m torch2mlx model.pt output/ --codegen
 ```
 
@@ -110,7 +110,7 @@ The following 36 architectures all achieve **100% layer-level analyzer coverage*
 | Speech | Whisper, Wav2Vec2, HuBERT |
 | Other | XLNet |
 
-**What "100% coverage" means:** Every child module's class name is in the registry (or is fully composed of registered children). This is a necessary but not sufficient condition for a working conversion — forward-pass correctness depends on all called operations being in the op registry and having matching semantics.
+**What "100% coverage" means:** Every child module's class name is in the registry (or is fully composed of registered children). This is *registry coverage* — a necessary but not sufficient condition for a working conversion. Use `result.coverage_metrics` for a breakdown: `init_coverage` (constructor code emitted), `registry_coverage` (leaf recognized), `call_coverage` (forward ops rewritten), and `skipped_leaves` (stateless modules like Identity/DropPath that are recognized but emit no code).
 
 ## Validation
 
