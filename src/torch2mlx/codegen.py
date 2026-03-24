@@ -82,18 +82,50 @@ class RewriteResult:
     unmapped_calls: list[str]  # Torch APIs not in OP_REGISTRY
 
 
+@dataclass(frozen=True)
+class CoverageMetrics:
+    """Disaggregated code generation coverage.
+
+    Separates "we recognize this module" (registry_coverage) from
+    "we actually emitted constructor code" (init_coverage).
+    """
+
+    total_leaves: int
+    mapped_leaves: int  # Non-None spec — real constructor emitted
+    skipped_leaves: int  # None spec — Identity, DropPath, RoPE, containers, etc.
+    unmapped_leaves: int  # Not in CONSTRUCTOR_SPECS at all
+
+    @property
+    def init_coverage(self) -> float:
+        """Fraction of code-bearing leaves that have a real constructor."""
+        effective = self.total_leaves - self.skipped_leaves
+        return self.mapped_leaves / effective if effective > 0 else 1.0
+
+    @property
+    def registry_coverage(self) -> float:
+        """Fraction of leaves recognized by CONSTRUCTOR_SPECS (including None)."""
+        if self.total_leaves == 0:
+            return 1.0
+        return (self.mapped_leaves + self.skipped_leaves) / self.total_leaves
+
+
 @dataclass
 class GeneratedCode:
     """Result of code generation."""
 
     source: str  # complete .py source
     class_name: str
-    coverage: float  # fraction of leaves with specs
+    coverage_metrics: CoverageMetrics
     todos: list[str] = field(default_factory=list)
     unmapped: list[str] = field(default_factory=list)
     traced: bool = False  # True if fx trace succeeded for __call__
     ast_rewritten: bool = False  # True if AST rewrite succeeded for __call__
     call_confidence: str = "todo"  # "mechanical" | "needs_review" | "todo"
+
+    @property
+    def coverage(self) -> float:
+        """Init coverage — honest metric excluding skipped (None-spec) leaves."""
+        return self.coverage_metrics.init_coverage
 
 
 @dataclass
@@ -130,6 +162,9 @@ def _apply_transform(value: Any, transform: str, module: Any = None) -> Any:
         if isinstance(value, (tuple, list)):
             return value[-1]
         return value
+    if transform.startswith("fixed:"):
+        # Return a fixed string value, ignoring the module attr
+        return transform[len("fixed:") :]
     raise ValueError(f"Unknown transform: {transform!r}")
 
 
@@ -179,6 +214,16 @@ def _infer_buffer_initializer(buf: Any) -> str:
             return f"mx.arange({n})"
         return f"mx.reshape(mx.arange({n}), {_format_value(shape)})"
 
+    # Lower-triangular pattern (causal mask): tril(ones(...))
+    if arr.ndim >= 2:
+        # Squeeze leading singleton dims for the tril check
+        squeezed = arr.squeeze()
+        if squeezed.ndim == 2:
+            rows, cols = squeezed.shape
+            expected_tril = _np.tril(_np.ones((rows, cols), dtype=arr.dtype))
+            if _np.array_equal(squeezed, expected_tril):
+                return f"mx.reshape(mx.tril(mx.ones(({rows}, {cols}))), {_format_value(shape)})"
+
     # Small buffer: emit literal array
     if flat.size <= 64:
         return f"mx.array({arr.tolist()})"
@@ -210,12 +255,18 @@ _EMBEDDING_SPEC = ConstructorSpec(
 
 _LAYERNORM_SPEC = ConstructorSpec(
     "nn.LayerNorm",
-    (ArgSpec("normalized_shape", "dims", "tuple_to_scalar"),),
+    (
+        ArgSpec("normalized_shape", "dims", "tuple_to_scalar"),
+        ArgSpec("eps", default=1e-5),
+    ),
 )
 
 _RMSNORM_SPEC = ConstructorSpec(
     "nn.RMSNorm",
-    (ArgSpec("normalized_shape", "dims"),),
+    (
+        ArgSpec("normalized_shape", "dims"),
+        ArgSpec("eps", default=1e-5),
+    ),
 )
 
 _CONV1D_SPEC = ConstructorSpec(
@@ -359,8 +410,8 @@ def _noarg(mlx_call: str) -> ConstructorSpec:
 _HF_CONV1D_SPEC = ConstructorSpec(
     "nn.Linear",
     (
-        ArgSpec("nf", "output_dims"),
         ArgSpec("nx", "input_dims"),
+        ArgSpec("nf", "output_dims"),
         ArgSpec("bias", "bias", "bias_check", default=True),
     ),
 )
@@ -422,8 +473,11 @@ CONSTRUCTOR_SPECS: dict[str, ConstructorSpec | None] = {
     "_WeightNorm": None,
     # HuggingFace — activations (stateless)
     "GELUActivation": _noarg("nn.GELU"),
-    "NewGELUActivation": _noarg("nn.GELU"),
-    "QuickGELUActivation": _noarg("nn.GELU"),
+    "NewGELUActivation": ConstructorSpec(
+        "nn.GELU",
+        (ArgSpec("_unused", "approx", transform="fixed:precise", default=""),),
+    ),
+    "QuickGELUActivation": _noarg("QuickGELU"),
     "BloomGelu": _noarg("nn.GELU"),
     "SiLUActivation": _noarg("nn.SiLU"),
     "ReLU6": None,
@@ -453,6 +507,36 @@ CONSTRUCTOR_SPECS: dict[str, ConstructorSpec | None] = {
     "HubertSamePadLayer": None,
     "BeitRelativePositionBias": None,
 }
+
+# Synthetic helper classes — emitted when a specific torch type is encountered,
+# providing a correct MLX implementation rather than an approximate alias.
+_SYNTHETIC_HELPERS: dict[str, _ClassDef] = {
+    "QuickGELU": _ClassDef(
+        name="QuickGELU",
+        init_body="",
+        forward_sig="forward(self, x)",
+        call_body=("    def __call__(self, x):\n        return x * mx.sigmoid(1.702 * x)\n"),
+        call_confidence="mechanical",
+    ),
+}
+
+# Runtime adapter for F.pad — emitted into generated source when F.pad is used.
+# PyTorch pad format: flat tuple (left, right, top, bottom, ...) for last N dims
+# in reverse order.  MLX pad format: [(before_0, after_0), ...] per axis in
+# forward order.  This helper bridges the two at runtime.
+_TORCH_PAD_HELPER = (
+    "def _torch_pad(tensor, pad, mode='constant', value=None):\n"
+    '    """F.pad adapter: convert PyTorch flat pad format to MLX nested format."""\n'
+    "    ndim = len(tensor.shape)\n"
+    "    n_pad_dims = len(pad) // 2\n"
+    "    pad_width = [(0, 0)] * ndim\n"
+    "    for i in range(n_pad_dims):\n"
+    "        axis = ndim - 1 - i\n"
+    "        pad_width[axis] = (pad[2 * i], pad[2 * i + 1])\n"
+    "    if mode == 'constant':\n"
+    "        return mx.pad(tensor, pad_width, constant_values=value if value is not None else 0)\n"
+    "    return mx.pad(tensor, pad_width)\n"
+)
 
 # Types whose children should be emitted as list items, not named attributes.
 _CONTAINER_TYPES = frozenset(
@@ -627,6 +711,7 @@ def _build_fx_function_map() -> None:
         F.cross_entropy: "F.cross_entropy",
         F.mse_loss: "F.mse_loss",
         F.dropout: "F.dropout",
+        F.pad: "F.pad",
     }
     # Python operators
     _op_funcs = {
@@ -712,6 +797,15 @@ def _translate_node(node: Any) -> str | None:
                     args_strs = [_node_arg_repr(a) for a in node.args]
                     if len(args_strs) == 2:
                         return f"{node.name} = {args_strs[0]}[{args_strs[1]}]"
+
+                # F.pad: route through _torch_pad adapter (format conversion)
+                if reg_key == "F.pad":
+                    args_strs = [_node_arg_repr(a) for a in node.args]
+                    kw_parts = []
+                    for k, v in node.kwargs.items():
+                        kw_parts.append(f"{k}={_node_arg_repr(v)}")
+                    all_args = ", ".join(args_strs + kw_parts)
+                    return f"{node.name} = _torch_pad({all_args})"
 
                 # Build call with param renames, stripping PyTorch-only kwargs
                 args_strs = [_node_arg_repr(a) for a in node.args]
@@ -967,16 +1061,30 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
         attr_name = func.attr
 
         # self.xxx(args) → leave alone (submodule calls)
+        # But self.xxx.method(args) → rewrite method (tensor ops on params/buffers)
         if _is_self_access(func.value):
-            # Special case: self.xxx.forward(args) → self.xxx(args)
-            if attr_name == "forward" and isinstance(func.value, _ast.Attribute):
+            if isinstance(func.value, _ast.Name) and func.value.id == "self":
+                # Direct self.xxx(args) — submodule call, leave alone
+                return node
+            # self.xxx.forward(args) → self.xxx(args)
+            if attr_name == "forward":
                 return _ast.Call(func=func.value, args=node.args, keywords=node.keywords)
-            return node
+            # self.xxx.method(args) — fall through to method rewriting below
 
         # super().forward(args) → super().__call__(args)
         if attr_name == "forward" and self._is_super_call(func.value):
             func.attr = "__call__"
             return node
+
+        # torch.jit.is_tracing() → False (always false in MLX)
+        if (
+            attr_name == "is_tracing"
+            and isinstance(func.value, _ast.Attribute)
+            and func.value.attr == "jit"
+            and isinstance(func.value.value, _ast.Name)
+            and func.value.value.id == "torch"
+        ):
+            return _ast.Constant(value=False)
 
         # torch.func(args)
         if isinstance(func.value, _ast.Name) and func.value.id == "torch":
@@ -1030,6 +1138,11 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
     # --- torch.func() rewriting ---
 
     def _rewrite_torch_func(self, node: _ast.Call, func_name: str) -> _ast.expr:
+        # torch.split(x, chunk_size, dim) — needs semantic translation
+        if func_name == "split" and len(node.args) >= 2:
+            tensor = node.args[0]
+            return self._handle_split(tensor, list(node.args[1:]), node.keywords)
+
         reg_key = f"torch.{func_name}"
         mapping = OP_REGISTRY.get(reg_key)
         if mapping is None:
@@ -1059,16 +1172,38 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
         if mapping.mlx_op == "no_op":
             return node.args[0] if node.args else node
 
-        rewritten = _ast.Call(
-            func=_make_mx_attr(mapping.mlx_op),
-            args=list(node.args),
-            keywords=self._rename_kwargs(node.keywords, mapping.param_renames),
-        )
+        # F.pad: rewrite to _torch_pad() adapter (handles format conversion at runtime)
+        if func_name == "pad":
+            # Map keyword names: mode and value pass through unchanged
+            return _ast.Call(
+                func=_ast.Name(id="_torch_pad", ctx=_ast.Load()),
+                args=list(node.args),
+                keywords=list(node.keywords),
+            )
 
-        # MLX's scaled_dot_product_attention requires `scale` kwarg.
-        # Compute it from the query's last dim: scale = q.shape[-1] ** -0.5
+        # SDPA: MLX takes (q, k, v, *, scale, mask=) — only 3 positional
         if func_name == "scaled_dot_product_attention" and node.args:
-            has_scale = any(kw.arg == "scale" for kw in rewritten.keywords)
+            pos_args = list(node.args[:3])
+            kws = self._rename_kwargs(node.keywords, mapping.param_renames)
+            # args[3] = attn_mask → mask= keyword
+            if len(node.args) > 3:
+                mask_arg = node.args[3]
+                # Skip None masks
+                if not (isinstance(mask_arg, _ast.Constant) and mask_arg.value is None):
+                    kws.append(_ast.keyword(arg="mask", value=mask_arg))
+            # args[4] = dropout_p → drop (no-op at inference)
+            # Compute scale from query's last dim if not provided or None
+            # Remove scale=None keywords (MLX requires a float)
+            kws = [
+                kw
+                for kw in kws
+                if not (
+                    kw.arg == "scale"
+                    and isinstance(kw.value, _ast.Constant)
+                    and kw.value.value is None
+                )
+            ]
+            has_scale = any(kw.arg == "scale" for kw in kws)
             if not has_scale:
                 q_arg = node.args[0]
                 scale_expr = _ast.BinOp(
@@ -1080,7 +1215,18 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
                     op=_ast.Pow(),
                     right=_ast.UnaryOp(op=_ast.USub(), operand=_ast.Constant(value=0.5)),
                 )
-                rewritten.keywords.append(_ast.keyword(arg="scale", value=scale_expr))
+                kws.append(_ast.keyword(arg="scale", value=scale_expr))
+            return _ast.Call(
+                func=_make_mx_attr(mapping.mlx_op),
+                args=pos_args,
+                keywords=kws,
+            )
+
+        rewritten = _ast.Call(
+            func=_make_mx_attr(mapping.mlx_op),
+            args=list(node.args),
+            keywords=self._rename_kwargs(node.keywords, mapping.param_renames),
+        )
 
         return rewritten
 
@@ -1090,6 +1236,8 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
         receiver = node.func.value
 
         # Special methods
+        if method_name == "split":
+            return self._handle_split(receiver, node.args, node.keywords)
         if method_name == "size":
             return self._handle_size(node)
         if method_name == "dim":
@@ -1133,7 +1281,17 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
         # x.transpose(0, 1) → mx.swapaxes(x, 0, 1)  [2 args stays as-is]
         _varargs_methods = ("view", "reshape", "expand", "permute")
         if method_name in _varargs_methods and len(node.args) > 1:
-            shape_tuple = _ast.Tuple(elts=list(node.args), ctx=_ast.Load())
+            elts = list(node.args)
+            # expand(-1) means "keep existing dim" — replace with receiver.shape[i]
+            if method_name == "expand":
+                for i, elt in enumerate(elts):
+                    if self._is_neg_one(elt):
+                        elts[i] = _ast.Subscript(
+                            value=_ast.Attribute(value=receiver, attr="shape", ctx=_ast.Load()),
+                            slice=_ast.Constant(value=i),
+                            ctx=_ast.Load(),
+                        )
+            shape_tuple = _ast.Tuple(elts=elts, ctx=_ast.Load())
             return _ast.Call(
                 func=_make_mx_attr(mapping.mlx_op),
                 args=[receiver, shape_tuple],
@@ -1148,6 +1306,20 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
         )
 
     # --- Special method handlers ---
+
+    @staticmethod
+    def _is_neg_one(node: _ast.expr) -> bool:
+        """Check if an AST node represents the constant -1."""
+        if isinstance(node, _ast.Constant) and node.value == -1:
+            return True
+        if (
+            isinstance(node, _ast.UnaryOp)
+            and isinstance(node.op, _ast.USub)
+            and isinstance(node.operand, _ast.Constant)
+            and node.operand.value == 1
+        ):
+            return True
+        return False
 
     def _handle_size(self, node: _ast.Call) -> _ast.expr:
         """x.size() → x.shape, x.size(dim) → x.shape[dim]."""
@@ -1262,6 +1434,54 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
                 keywords=[],
             )
         return node
+
+    def _handle_split(
+        self,
+        receiver: _ast.expr,
+        args: list[_ast.expr],
+        keywords: list[_ast.keyword],
+    ) -> _ast.expr:
+        """Translate torch split semantics to MLX.
+
+        torch.split(x, chunk_size, dim) splits by SIZE (last chunk may be smaller).
+        mx.split(x, indices, axis) splits at the given indices.
+        Convert: mx.split(x, list(range(chunk_size, x.shape[axis], chunk_size)), axis=axis)
+        """
+        if not args:
+            return _ast.Call(func=_make_mx_attr("mx.split"), args=[receiver], keywords=keywords)
+        chunk_arg = args[0]
+        # Determine axis from args[1] or keyword 'dim'
+        axis_node: _ast.expr = _ast.Constant(value=0)
+        if len(args) > 1:
+            axis_node = args[1]
+        else:
+            for kw in keywords:
+                if kw.arg == "dim":
+                    axis_node = kw.value
+                    break
+        # chunk_size → indices: list(range(chunk_size, x.shape[axis], chunk_size))
+        # This preserves remainder semantics (torch.split returns a smaller last chunk).
+        shape_subscript = _ast.Subscript(
+            value=_ast.Attribute(value=receiver, attr="shape", ctx=_ast.Load()),
+            slice=axis_node,
+            ctx=_ast.Load(),
+        )
+        indices_expr = _ast.Call(
+            func=_ast.Name(id="list", ctx=_ast.Load()),
+            args=[
+                _ast.Call(
+                    func=_ast.Name(id="range", ctx=_ast.Load()),
+                    args=[chunk_arg, shape_subscript, chunk_arg],
+                    keywords=[],
+                )
+            ],
+            keywords=[],
+        )
+        return _ast.Call(
+            func=_make_mx_attr("mx.split"),
+            args=[receiver, indices_expr],
+            keywords=[_ast.keyword(arg="axis", value=axis_node)],
+        )
 
     def _handle_expand_as(self, node: _ast.Call) -> _ast.expr:
         """x.expand_as(y) → mx.broadcast_to(x, y.shape)."""
@@ -1467,15 +1687,16 @@ def _get_forward_signature(module: Any) -> str:
 def _walk_module(
     module: Any,
     seen_classes: dict[str, _ClassDef],
-) -> tuple[list[str], int, int, list[str], list[str]]:
+) -> tuple[list[str], int, int, int, list[str], list[str]]:
     """Recursively walk module tree for __init__ generation.
 
     Returns:
-        (init_lines, total_leaves, mapped_leaves, todos, unmapped)
+        (init_lines, total_leaves, mapped_leaves, skipped_leaves, todos, unmapped)
     """
     init_lines: list[str] = []
     total = 0
     mapped = 0
+    skipped = 0
     todos: list[str] = []
     unmapped: list[str] = []
 
@@ -1491,6 +1712,10 @@ def _walk_module(
                 cstr = _format_constructor(child, spec)
                 init_lines.append(f"        self.{safe_name} = {cstr}")
                 mapped += 1
+                # Register synthetic helper class if needed (e.g. QuickGELU)
+                helper_name = spec.mlx_call
+                if helper_name in _SYNTHETIC_HELPERS and helper_name not in seen_classes:
+                    seen_classes[helper_name] = _SYNTHETIC_HELPERS[helper_name]
             except (AttributeError, TypeError) as exc:
                 todos.append(f"self.{safe_name}: {child_type} — {exc}")
                 init_lines.append(
@@ -1503,22 +1728,24 @@ def _walk_module(
             if child_type in _CONTAINER_TYPES:
                 if has_children:
                     # 2a: List-like container with children → emit list syntax
-                    c_lines, c_total, c_mapped, c_todos, c_unmapped = _handle_container(
+                    c_lines, c_total, c_mapped, c_skipped, c_todos, c_unmapped = _handle_container(
                         safe_name, child, seen_classes
                     )
                     init_lines.extend(c_lines)
                     total += c_total
                     mapped += c_mapped
+                    skipped += c_skipped
                     todos.extend(c_todos)
                     unmapped.extend(c_unmapped)
                 # else: empty container → 0 leaves, skip silently
             elif has_children:
                 # 2b: Composite in CONSTRUCTOR_SPECS (e.g. TransformerEncoderLayer)
-                sub_lines, sub_total, sub_mapped, sub_todos, sub_unmapped = _walk_module(
-                    child, seen_classes
+                sub_lines, sub_total, sub_mapped, sub_skipped, sub_todos, sub_unmapped = (
+                    _walk_module(child, seen_classes)
                 )
                 total += sub_total
                 mapped += sub_mapped
+                skipped += sub_skipped
                 todos.extend(sub_todos)
                 unmapped.extend(sub_unmapped)
                 if child_type not in seen_classes:
@@ -1535,17 +1762,18 @@ def _walk_module(
             else:
                 # 2c: Stateless skip (Identity, DropPath, RoPE, etc.)
                 total += 1
-                mapped += 1
+                skipped += 1
 
         else:
             # CASE 3: Not in CONSTRUCTOR_SPECS at all
             if list(child.named_children()):
                 # 3a: Composite — recurse, register helper class
-                sub_lines, sub_total, sub_mapped, sub_todos, sub_unmapped = _walk_module(
-                    child, seen_classes
+                sub_lines, sub_total, sub_mapped, sub_skipped, sub_todos, sub_unmapped = (
+                    _walk_module(child, seen_classes)
                 )
                 total += sub_total
                 mapped += sub_mapped
+                skipped += sub_skipped
                 todos.extend(sub_todos)
                 unmapped.extend(sub_unmapped)
                 if child_type not in seen_classes:
@@ -1632,8 +1860,12 @@ def _walk_module(
             init_lines.append(f"        self.{_sanitize_name(attr_name)} = {attr_val!r}")
         elif attr_val is None:
             init_lines.append(f"        self.{_sanitize_name(attr_name)} = None")
+        elif isinstance(attr_val, (tuple, list)):
+            init_lines.append(
+                f"        self.{_sanitize_name(attr_name)} = {_format_value(attr_val)}"
+            )
 
-    return init_lines, total, mapped, todos, unmapped
+    return init_lines, total, mapped, skipped, todos, unmapped
 
 
 def _module_fingerprint(module: Any) -> tuple:
@@ -1659,7 +1891,7 @@ def _module_fingerprint(module: Any) -> tuple:
             for k, v in vars(module).items()
             if k not in skip
             and not k.startswith("_")
-            and isinstance(v, (int, float, bool, str, type(None)))
+            and isinstance(v, (int, float, bool, str, type(None), tuple, list))
         )
     )
     return (children, params, buffers, scalars)
@@ -1669,7 +1901,7 @@ def _handle_nonuniform_container(
     safe_name: str,
     children: list[tuple[str, Any]],
     seen_classes: dict[str, _ClassDef],
-) -> tuple[list[str], int, int, list[str], list[str]]:
+) -> tuple[list[str], int, int, int, list[str], list[str]]:
     """Handle containers where items share a type name but differ structurally.
 
     Groups items by structural fingerprint, creates variant classes for each
@@ -1697,7 +1929,7 @@ def _handle_nonuniform_container(
         for item in items:
             init_lines.append(f"            {item},")
         init_lines.append("        ]")
-        return init_lines, total, mapped_count, todos, []
+        return init_lines, total, mapped_count, 0, todos, []
 
     # --- Composite items: group by fingerprint, create variant classes ---
 
@@ -1712,7 +1944,7 @@ def _handle_nonuniform_container(
     all_child_names_frozen = frozenset(all_child_names)
 
     fp_to_variant: dict[tuple, str] = {}
-    variant_leaves: dict[str, tuple[int, int]] = {}  # variant → (total, mapped)
+    variant_leaves: dict[str, tuple[int, int, int]] = {}  # variant → (total, mapped, skipped)
     todos_out: list[str] = []
     unmapped_out: list[str] = []
     variant_counter = 0
@@ -1728,7 +1960,7 @@ def _handle_nonuniform_container(
         fp_to_variant[fp] = variant_name
 
         if list(child.named_children()):
-            sub_lines, sub_total, sub_mapped, sub_todos, sub_unmapped = _walk_module(
+            sub_lines, sub_total, sub_mapped, sub_skipped, sub_todos, sub_unmapped = _walk_module(
                 child, seen_classes
             )
             # Emit None for any absent sub-modules referenced by forward()
@@ -1744,30 +1976,32 @@ def _handle_nonuniform_container(
                     call_confidence=cc,
                     extra_methods=em,
                 )
-            variant_leaves[variant_name] = (sub_total, sub_mapped)
+            variant_leaves[variant_name] = (sub_total, sub_mapped, sub_skipped)
             todos_out.extend(sub_todos)
             unmapped_out.extend(sub_unmapped)
         else:
-            variant_leaves[variant_name] = (0, 0)
+            variant_leaves[variant_name] = (0, 0, 0)
 
     # Build the list with per-item variant types
     items_out: list[str] = []
     total = 0
     mapped_count = 0
+    skipped_count = 0
     for _, child in children:
         fp = _module_fingerprint(child)
         variant_name = fp_to_variant[fp]
         items_out.append(f"{variant_name}()")
-        vt, vm = variant_leaves[variant_name]
+        vt, vm, vs = variant_leaves[variant_name]
         total += vt
         mapped_count += vm
+        skipped_count += vs
 
     init_lines = [f"        self.{safe_name} = ["]
     for item in items_out:
         init_lines.append(f"            {item},")
     init_lines.append("        ]")
 
-    return init_lines, total, mapped_count, todos_out, unmapped_out
+    return init_lines, total, mapped_count, skipped_count, todos_out, unmapped_out
 
 
 def _emit_none_modules(module: Any, all_child_names: frozenset[str] | None = None) -> list[str]:
@@ -1803,18 +2037,18 @@ def _handle_container(
     safe_name: str,
     container: Any,
     seen_classes: dict[str, _ClassDef],
-) -> tuple[list[str], int, int, list[str], list[str]]:
+) -> tuple[list[str], int, int, int, list[str], list[str]]:
     """Handle ModuleList/Sequential/ModuleDict containers.
 
     Uniform type → list comprehension.  Mixed types → individual items.
     Same-type but structurally different → variant classes.
 
     Returns:
-        (init_lines, total_leaves, mapped_leaves, todos, unmapped)
+        (init_lines, total_leaves, mapped_leaves, skipped_leaves, todos, unmapped)
     """
     children = list(container.named_children())
     if not children:
-        return [], 0, 0, [], []
+        return [], 0, 0, 0, [], []
 
     child_types = [type(c).__name__ for _, c in children]
     count = len(children)
@@ -1835,13 +2069,13 @@ def _handle_container(
             try:
                 cstr = _format_constructor(rep, spec)
                 line = f"        self.{safe_name} = [{cstr} for _ in range({count})]"
-                return [line], count, count, [], []
+                return [line], count, count, 0, [], []
             except (AttributeError, TypeError):
                 pass  # fall through to mixed path
 
         # Uniform composite/container with children → recurse representative
         if list(rep.named_children()):
-            sub_lines, sub_total, sub_mapped, sub_todos, sub_unmapped = _walk_module(
+            sub_lines, sub_total, sub_mapped, sub_skipped, sub_todos, sub_unmapped = _walk_module(
                 rep, seen_classes
             )
             if item_type not in seen_classes:
@@ -1855,14 +2089,22 @@ def _handle_container(
                     extra_methods=em,
                 )
             line = f"        self.{safe_name} = [{item_type}() for _ in range({count})]"
-            return [line], sub_total * count, sub_mapped * count, sub_todos, sub_unmapped
+            return (
+                [line],
+                sub_total * count,
+                sub_mapped * count,
+                sub_skipped * count,
+                sub_todos,
+                sub_unmapped,
+            )
 
         # Uniform stateless skip / unmapped without children
         if item_type in CONSTRUCTOR_SPECS:
-            return [], count, count, [], []
+            return [], count, 0, count, [], []  # skipped, not mapped
         return (
             [f"        # TODO: self.{safe_name} = [...]  # {count}x {item_type}"],
             count,
+            0,
             0,
             [f"{safe_name}: {count}x {item_type} has no constructor spec"],
             [item_type],
@@ -1872,6 +2114,7 @@ def _handle_container(
     items: list[str] = []
     total = 0
     mapped_count = 0
+    skipped_count = 0
     todos: list[str] = []
     unmapped_list: list[str] = []
 
@@ -1890,11 +2133,12 @@ def _handle_container(
                 todos.append(f"{safe_name}[{child_name}]: {child_type} — {exc}")
         elif list(child.named_children()):
             # Composite with children — recurse
-            sub_lines, sub_total, sub_mapped, sub_todos, sub_unmapped = _walk_module(
+            sub_lines, sub_total, sub_mapped, sub_skipped, sub_todos, sub_unmapped = _walk_module(
                 child, seen_classes
             )
             total += sub_total
             mapped_count += sub_mapped
+            skipped_count += sub_skipped
             todos.extend(sub_todos)
             unmapped_list.extend(sub_unmapped)
             if child_type not in seen_classes:
@@ -1911,7 +2155,7 @@ def _handle_container(
         elif child_type in CONSTRUCTOR_SPECS:
             # Stateless skip (None spec, no children)
             total += 1
-            mapped_count += 1
+            skipped_count += 1
         else:
             # Unmapped leaf
             total += 1
@@ -1920,14 +2164,14 @@ def _handle_container(
             todos.append(f"{safe_name}[{child_name}]: {child_type} has no constructor spec")
 
     if not items:
-        return [], total, mapped_count, todos, unmapped_list
+        return [], total, mapped_count, skipped_count, todos, unmapped_list
 
     init_lines = [f"        self.{safe_name} = ["]
     for item in items:
         init_lines.append(f"            {item},")
     init_lines.append("        ]")
 
-    return init_lines, total, mapped_count, todos, unmapped_list
+    return init_lines, total, mapped_count, skipped_count, todos, unmapped_list
 
 
 def _make_todo_call_helper(type_name: str, forward_sig: str) -> str:
@@ -1947,6 +2191,13 @@ def _extract_config_refs(source: str) -> set[str]:
     return set(_CONFIG_ATTR_RE.findall(source))
 
 
+# Config attribute overrides: force specific values in emitted SimpleNamespace
+_CONFIG_OVERRIDES: dict[str, str] = {
+    "_attn_implementation": "'eager'",
+    "attn_implementation": "'eager'",
+}
+
+
 def _emit_config_line(model: Any, config_attrs: set[str]) -> str | None:
     """Build a `self.config = SimpleNamespace(...)` line from model.config.
 
@@ -1958,6 +2209,9 @@ def _emit_config_line(model: Any, config_attrs: set[str]) -> str | None:
 
     parts: list[str] = []
     for attr in sorted(config_attrs):
+        if attr in _CONFIG_OVERRIDES:
+            parts.append(f"{attr}={_CONFIG_OVERRIDES[attr]}")
+            continue
         val = getattr(config, attr, None)
         if val is None:
             parts.append(f"{attr}=None")
@@ -2096,6 +2350,7 @@ def generate(
         init_lines: list[str] = []
         total_leaves = 0
         mapped_leaves = 0
+        skipped_leaves = 0
         todos: list[str] = []
         unmapped: list[str] = []
         if root_spec is not None:
@@ -2110,9 +2365,16 @@ def generate(
                     f"        # TODO: self.module = {root_spec.mlx_call}(...)  # {exc}"
                 )
     else:
-        init_lines, total_leaves, mapped_leaves, todos, unmapped = _walk_module(model, seen_classes)
+        init_lines, total_leaves, mapped_leaves, skipped_leaves, todos, unmapped = _walk_module(
+            model, seen_classes
+        )
 
-    coverage = mapped_leaves / total_leaves if total_leaves > 0 else 1.0
+    metrics = CoverageMetrics(
+        total_leaves=total_leaves,
+        mapped_leaves=mapped_leaves,
+        skipped_leaves=skipped_leaves,
+        unmapped_leaves=total_leaves - mapped_leaves - skipped_leaves,
+    )
 
     # __call__ generation cascade: fx trace → AST rewrite → TODO stub
     traced = False
@@ -2131,12 +2393,14 @@ def generate(
             pass
 
     # 2. AST rewrite (handles dynamic control flow that fx cannot)
+    root_extra_methods = ""
     if not traced:
         rewrite = _rewrite_forward_ast(model)
         if rewrite is not None and rewrite.confidence != Confidence.BLOCKER:
             call_method = _format_ast_call(rewrite.source, rewrite.confidence)
             ast_rewritten = True
             call_confidence = rewrite.confidence.value
+            root_extra_methods = _get_extra_methods(model, rewrite.source)
             # Merge unmapped calls into todos
             for call in rewrite.unmapped_calls:
                 todos.append(f"__call__: unmapped call {call}")
@@ -2173,6 +2437,7 @@ def generate(
         f"    def __init__(self) -> None:\n"
         f"        super().__init__()\n"
         f"{init_body}\n\n"
+        f"{root_extra_methods}"
         f"{call_method}\n"
     )
 
@@ -2193,7 +2458,7 @@ def generate(
         )
 
     # Add typing imports if type annotations reference them
-    _typing_names = {"Optional", "Union", "Tuple", "List", "Dict"}
+    _typing_names = {"Optional", "Union", "Tuple", "List", "Dict", "Callable"}
     used_typing = [t for t in _typing_names if t in source]
     if used_typing and "from typing import" not in source:
         typing_import = f"from typing import {', '.join(sorted(used_typing))}\n"
@@ -2209,10 +2474,16 @@ def generate(
             "import math\nimport mlx.core as mx\n",
         )
 
+    # Inject _torch_pad adapter when F.pad was rewritten
+    if "_torch_pad(" in source and "def _torch_pad(" not in source:
+        idx = source.find("\nclass ")
+        if idx >= 0:
+            source = source[:idx] + "\n" + _TORCH_PAD_HELPER + "\n" + source[idx:]
+
     return GeneratedCode(
         source=source,
         class_name=class_name,
-        coverage=coverage,
+        coverage_metrics=metrics,
         todos=todos,
         unmapped=unmapped,
         traced=traced,

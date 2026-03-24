@@ -90,6 +90,18 @@ def main(argv: list[str] | None = None) -> None:
     # Load input
     if suffix in (".pt", ".pth"):
         data = _load_torch_checkpoint(model_path)
+        if isinstance(data, dict):
+            print(
+                "error: checkpoint contains a state_dict, not a Module.\n"
+                "Weight transpositions (e.g. Conv2d [O,I,H,W] -> [O,H,W,I]) cannot\n"
+                "be inferred without the model architecture.\n\n"
+                "Options:\n"
+                "  - Save the full model: torch.save(model, 'model.pt')\n"
+                "  - Use the library API with an explicit module_map:\n"
+                "      torch2mlx.convert(state_dict, output, module_map={...})",
+                file=sys.stderr,
+            )
+            sys.exit(1)
     elif suffix == ".safetensors":
         data = sd.load_safetensors(model_path)
     else:
@@ -138,9 +150,8 @@ def main(argv: list[str] | None = None) -> None:
             pass  # No torch — skip analysis silently
 
     # .safetensors inputs are already in final layout (no module tree) — suppress
-    # the "no module_map" warning.  .pt/.pth state_dict saves may still need
-    # weight transpositions (e.g. Conv2d [O,I,H,W] → [O,H,W,I]), so let the
-    # converter warn when no module_map is available.
+    # the "no module_map" warning.  .pt/.pth state_dict inputs are rejected above;
+    # only Modules (auto-build map) and .safetensors (pre-converted) reach here.
     convert(
         data,
         output_file,

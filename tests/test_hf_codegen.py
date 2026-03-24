@@ -140,11 +140,12 @@ def test_hf_codegen_no_crash(cls_name: str, checkpoint: str) -> None:
     ids=[tid for tid, _, _ in _HF_MODELS],
 )
 def test_hf_codegen_full_coverage(cls_name: str, checkpoint: str) -> None:
-    """All HF models have 100% init coverage via recursive leaf counting."""
+    """All HF models have 100% registry coverage (all leaves recognized)."""
     data = _codegen_hf(cls_name, checkpoint)
     result = data["result"]
-    assert result.coverage == 1.0, (
-        f"{cls_name}: coverage {result.coverage:.0%}, unmapped: {result.unmapped}"
+    m = result.coverage_metrics
+    assert m.registry_coverage == 1.0, (
+        f"{cls_name}: registry_coverage {m.registry_coverage:.0%}, unmapped: {result.unmapped}"
     )
     assert result.unmapped == [], f"{cls_name}: unexpected unmapped types: {result.unmapped}"
 
@@ -316,8 +317,9 @@ def test_hf_codegen_coverage_baseline(tid: str, cls_name: str, checkpoint: str) 
     data = _codegen_hf(cls_name, checkpoint)
     result = data["result"]
     expected = _COVERAGE_BASELINES[tid]
-    assert result.coverage >= expected - 1e-9, (
-        f"{cls_name}: coverage {result.coverage:.0%} < baseline {expected:.0%}"
+    m = result.coverage_metrics
+    assert m.registry_coverage >= expected - 1e-9, (
+        f"{cls_name}: registry_coverage {m.registry_coverage:.0%} < baseline {expected:.0%}"
     )
 
 

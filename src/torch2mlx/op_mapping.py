@@ -103,6 +103,7 @@ def _populate() -> None:
         OpMapping("torch.tensor", "mx.array", {}, "torch.tensor → mx.array"),
         OpMapping("torch.finfo", "mx.finfo", {}, "Float type info"),
         OpMapping("torch.iinfo", "mx.iinfo", {}, "Integer type info"),
+        OpMapping("torch.empty", "mx.zeros", {}, "No uninitialized alloc in MLX; use zeros"),
         # Math functions
         OpMapping("torch.where", "mx.where", {}, ""),
         OpMapping("torch.clamp", "mx.clip", {"min": "a_min", "max": "a_max"}, ""),
@@ -122,7 +123,7 @@ def _populate() -> None:
         OpMapping("x.matmul", "mx.matmul", {}, "method -> function"),
         # F.* functions (additional)
         OpMapping("F.dropout", "no_op", {}, "No-op at eval time"),
-        OpMapping("F.pad", "mx.pad", {}, "Different pad format"),
+        OpMapping("F.pad", "mx.pad", {}, "INCOMPATIBLE pad format — requires manual rewrite"),
         OpMapping(
             "F.scaled_dot_product_attention",
             "mx.fast.scaled_dot_product_attention",

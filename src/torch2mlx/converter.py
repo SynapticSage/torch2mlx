@@ -178,7 +178,7 @@ def convert(
         # for multi-layer models.
         named_modules_list = [(name, type(m).__name__) for name, m in model.named_modules()]
         # numpy-only from here on
-        flat_weights = {k: v.detach().numpy() for k, v in model.state_dict().items()}
+        flat_weights = {k: v.detach().cpu().numpy() for k, v in model.state_dict().items()}
         resolved_map = (
             module_map if module_map is not None else build_module_map(named_modules_list)
         )

@@ -11,6 +11,7 @@ from torch2mlx.codegen import (
     ArgSpec,
     Confidence,
     ConstructorSpec,
+    CoverageMetrics,
     GeneratedCode,
     _apply_transform,
     _dotted_to_access,
@@ -90,7 +91,11 @@ class TestApplyTransform:
 
 class TestDataclasses:
     def test_generated_code_defaults(self):
-        gc = GeneratedCode(source="x", class_name="Foo", coverage=1.0)
+        metrics = CoverageMetrics(
+            total_leaves=1, mapped_leaves=1, skipped_leaves=0, unmapped_leaves=0
+        )
+        gc = GeneratedCode(source="x", class_name="Foo", coverage_metrics=metrics)
+        assert gc.coverage == 1.0
         assert gc.todos == []
         assert gc.unmapped == []
         assert gc.traced is False
@@ -699,6 +704,33 @@ class TestCoverageCountsLeaves:
         result = generate(Model())
         # 2 leaves (fc is mapped, Weird is unmapped) → 50%
         assert result.coverage == pytest.approx(0.5)
+
+    def test_coverage_metrics_with_skipped_leaves(self):
+        """Identity (None-spec) leaves count as skipped, not mapped."""
+        from torch2mlx.codegen import generate
+
+        class Model(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc = nn.Linear(10, 5)
+                self.skip = nn.Identity()
+
+            def forward(self, x):
+                return self.skip(self.fc(x))
+
+        result = generate(Model())
+        m = result.coverage_metrics
+        # fc → mapped, Identity → skipped
+        assert m.mapped_leaves == 1
+        assert m.skipped_leaves == 1
+        assert m.total_leaves == 2
+        assert m.unmapped_leaves == 0
+        # init_coverage excludes skipped: 1 / (2 - 1) = 1.0
+        assert m.init_coverage == 1.0
+        # registry_coverage includes skipped: (1 + 1) / 2 = 1.0
+        assert m.registry_coverage == 1.0
+        # coverage property returns init_coverage
+        assert result.coverage == m.init_coverage
 
 
 # ── Edge case tests (skeptic review) ─────────────────────────────────────────

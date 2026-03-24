@@ -154,16 +154,52 @@ _HF_GLOBAL_STUBS: dict[str, str] = {
         "    incremental_indices = (mx.cumsum(mask, axis=1).astype(mask.dtype) + past_key_values_length) * mask\n"
         "    return incremental_indices.astype(mx.int32) + padding_idx\n"
     ),
+    "eager_attention_forward": (
+        "def eager_attention_forward(module, query, key, value, attention_mask=None,"
+        " scaling=None, dropout=0.0, **kwargs):\n"
+        "    if scaling is None:\n"
+        "        scaling = query.shape[-1] ** -0.5\n"
+        "    # Step-by-step attention (matches HF eager path numerics)\n"
+        "    attn_weights = (query @ mx.swapaxes(key, -1, -2)) * scaling\n"
+        "    # Apply causal mask if needed (decoder attention)\n"
+        "    is_causal = getattr(module, 'is_causal', False)\n"
+        "    if is_causal and query.shape[-2] > 1:\n"
+        "        L, S = query.shape[-2], key.shape[-2]\n"
+        "        causal = mx.tril(mx.ones((L, S)))\n"
+        "        mask_value = mx.array(mx.finfo(attn_weights.dtype).min)\n"
+        "        attn_weights = mx.where(causal, attn_weights, mask_value)\n"
+        "    if attention_mask is not None:\n"
+        "        attn_weights = attn_weights + attention_mask\n"
+        "    attn_weights = mx.softmax(attn_weights, axis=-1)\n"
+        "    attn_output = attn_weights @ value\n"
+        "    # Transpose from (B, heads, seq, dim) to (B, seq, heads, dim)\n"
+        "    attn_output = mx.transpose(attn_output, (0, 2, 1, 3))\n"
+        "    return attn_output, attn_weights\n"
+    ),
+    "_prepare_4d_causal_attention_mask_for_sdpa": (
+        "def _prepare_4d_causal_attention_mask_for_sdpa(*args, **kwargs):\n"
+        "    raise NotImplementedError('SDPA mask prep not needed with eager attention')\n"
+    ),
+    "_prepare_4d_attention_mask_for_sdpa": (
+        "def _prepare_4d_attention_mask_for_sdpa(*args, **kwargs):\n"
+        "    raise NotImplementedError('SDPA mask prep not needed with eager attention')\n"
+    ),
+    "ALL_ATTENTION_FUNCTIONS": ("ALL_ATTENTION_FUNCTIONS = {'eager': eager_attention_forward}\n"),
 }
 
 
 def _inject_hf_global_stubs(source: str) -> str:
     """Inject global HF utility function stubs before the first class definition."""
-    needed = [name for name in _HF_GLOBAL_STUBS if name + "(" in source]
+    needed = [
+        name for name in _HF_GLOBAL_STUBS if _re.search(r"\b" + _re.escape(name) + r"\b", source)
+    ]
     if not needed:
         return source
 
-    stubs = "\n".join(_HF_GLOBAL_STUBS[n] for n in sorted(needed))
+    # Order stubs so dependencies come first (ALL_ATTENTION_FUNCTIONS needs eager_attention_forward)
+    _STUB_DEPS = {"ALL_ATTENTION_FUNCTIONS": "eager_attention_forward"}
+    ordered = sorted(needed, key=lambda n: (n in _STUB_DEPS, n))
+    stubs = "\n".join(_HF_GLOBAL_STUBS[n] for n in ordered)
     idx = source.find("\nclass ")
     if idx >= 0:
         source = source[:idx] + "\n" + stubs + "\n" + source[idx:]
@@ -215,6 +251,57 @@ def _inject_hf_output_stubs(source: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _inject_nchw_to_nhwc(source: str) -> str:
+    """Inject NCHW→NHWC transpose for vision models.
+
+    HF vision models unpack pixel_values as (B, C, H, W) then pass to Conv2d.
+    MLX Conv2d expects (B, H, W, C).  Rewrite the unpack + Conv2d pipeline.
+    """
+    # Pattern: NCHW shape unpack — (batch_size, num_channels, height, width) = pixel_values.shape
+    nchw_pat = _re.compile(
+        r"^(\s*)\((\w+), (\w+), (\w+), (\w+)\) = (pixel_values)\.shape",
+        _re.MULTILINE,
+    )
+    match = nchw_pat.search(source)
+    if match is None:
+        return source
+    indent = match.group(1)
+    b, c, h, w = match.group(2), match.group(3), match.group(4), match.group(5)
+    pv = match.group(6)
+    # Rewrite to NHWC: transpose then unpack as (B, H, W, C)
+    replacement = (
+        f"{indent}{pv} = mx.transpose({pv}, (0, 2, 3, 1))  # NCHW → NHWC for MLX Conv2d\n"
+        f"{indent}({b}, {h}, {w}, {c}) = {pv}.shape"
+    )
+    source = source[: match.start()] + replacement + source[match.end() :]
+
+    # Fix the flatten+transpose after Conv2d patch projection:
+    # NCHW: flatten(proj, 2) -> (B, C, H*W), then swapaxes(1,2) -> (B, H*W, C)
+    # NHWC: proj is (B, H, W, C), need flatten spatial dims then done:
+    #        reshape(proj, (B, -1, C)) -> (B, H*W, C)
+    source = source.replace(
+        "mx.swapaxes(mx.flatten(self.projection(pixel_values), 2), 1, 2)",
+        "(lambda _p: mx.reshape(_p, (_p.shape[0], -1, _p.shape[-1])))(self.projection(pixel_values))",
+    )
+    return source
+
+
+def _inject_logger_stub(source: str) -> str:
+    """Inject logging setup when generated code references `logger.`."""
+    if "logger." not in source or "import logging" in source:
+        return source
+    stub = (
+        "import logging\n"
+        "logger = logging.getLogger(__name__)\n"
+        "if not hasattr(logger, 'warning_once'):\n"
+        "    logger.warning_once = logger.warning\n"
+    )
+    idx = source.find("\nclass ")
+    if idx >= 0:
+        source = source[:idx] + "\n" + stub + source[idx:]
+    return source
+
+
 def hf_post_process(source: str, model: Any) -> str:
     """Chain all HF-specific inject functions.
 
@@ -226,4 +313,6 @@ def hf_post_process(source: str, model: Any) -> str:
     source = _inject_hf_method_stubs(source)
     source = _inject_hf_global_stubs(source)
     source = _inject_hf_output_stubs(source)
+    source = _inject_logger_stub(source)
+    source = _inject_nchw_to_nhwc(source)
     return source

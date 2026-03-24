@@ -123,6 +123,7 @@ EXPECTED_OPS = [
     ("torch.tensor", "mx.array", {}),
     ("torch.finfo", "mx.finfo", {}),
     ("torch.iinfo", "mx.iinfo", {}),
+    ("torch.empty", "mx.zeros", {}),
     # Math functions
     ("torch.where", "mx.where", {}),
     ("torch.clamp", "mx.clip", {"min": "a_min", "max": "a_max"}),

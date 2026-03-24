@@ -106,7 +106,10 @@ def _populate() -> None:
         LayerMapping("GELUActivation", "nn.GELU", "identity", "HF custom GELU wrapper"),
         LayerMapping("NewGELUActivation", "nn.GELU", "identity", "HF GPT-2 GELU variant"),
         LayerMapping(
-            "QuickGELUActivation", "nn.GELU", "identity", "HF CLIP x*sigmoid(1.702x) approx"
+            "QuickGELUActivation",
+            "nn.GELU",
+            "identity",
+            "HF CLIP x*sigmoid(1.702x) — codegen emits QuickGELU adapter",
         ),
         LayerMapping(
             "Conv1D", "nn.Linear", "linear_transposed", "HF GPT-2 Linear with [in,out] weights"
