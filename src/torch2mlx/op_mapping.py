@@ -100,6 +100,12 @@ def _populate() -> None:
         OpMapping("torch.full", "mx.full", {}, ""),
         OpMapping("torch.zeros_like", "mx.zeros_like", {}, ""),
         OpMapping("torch.ones_like", "mx.ones_like", {}, ""),
+        OpMapping(
+            "torch.full_like",
+            "mx.full",
+            {},
+            "Needs shape/dtype extraction — handled by AST special case",
+        ),
         OpMapping("torch.tensor", "mx.array", {}, "torch.tensor → mx.array"),
         OpMapping("torch.finfo", "mx.finfo", {}, "Float type info"),
         OpMapping("torch.iinfo", "mx.iinfo", {}, "Integer type info"),
@@ -113,6 +119,7 @@ def _populate() -> None:
         OpMapping("torch.log", "mx.log", {}, ""),
         OpMapping("torch.exp", "mx.exp", {}, ""),
         OpMapping("torch.tanh", "mx.tanh", {}, ""),
+        OpMapping("torch.cumsum", "mx.cumsum", {"dim": "axis"}, ""),
         # Tensor methods (additional)
         OpMapping("x.expand", "mx.broadcast_to", {}, "method -> function"),
         OpMapping("x.clamp", "mx.clip", {"min": "a_min", "max": "a_max"}, "method -> function"),

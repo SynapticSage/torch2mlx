@@ -429,6 +429,14 @@ _HF_FORWARD_MODELS = [
     ("ElectraModel", "google/electra-small-discriminator", "text"),
     ("ViTModel", "google/vit-base-patch16-224", "vision"),
     ("GPT2Model", "gpt2", "text"),
+    # Phase 2: near-clones of validated models
+    ("CamembertModel", "camembert-base", "text"),
+    ("Data2VecTextModel", "facebook/data2vec-text-base", "text"),
+    ("MPNetModel", "microsoft/mpnet-base", "text"),
+    ("Dinov2Model", "facebook/dinov2-small", "vision"),
+    # Phase 3: decoder models — deferred pending disk space / larger infra changes
+    #   OPT: needs OPTLearnedPositionalEmbedding helper class + _update_causal_mask
+    #   GPT-Neo: needs Cache/DynamicCache stubs (added), large model (~250MB)
 ]
 
 
@@ -444,6 +452,12 @@ def _make_hf_inputs(cls_name, checkpoint, input_kind):
         num_channels = getattr(config, "num_channels", 3)
         x_torch = torch.randn(1, num_channels, image_size, image_size)
         kwargs = {"pixel_values": x_torch}
+    elif input_kind == "encoder_decoder":
+        # Encoder-decoder models need both input_ids and decoder_input_ids
+        vocab_size = getattr(config, "vocab_size", 30522)
+        x_torch = torch.randint(0, vocab_size, (1, 16))
+        decoder_ids = torch.randint(0, vocab_size, (1, 8))
+        kwargs = {"input_ids": x_torch, "decoder_input_ids": decoder_ids}
     else:
         # Text models expect input_ids: (B, seq_len)
         vocab_size = getattr(config, "vocab_size", 30522)
@@ -483,10 +497,9 @@ class TestHFForwardPass:
         with torch.no_grad():
             y_torch = _extract_output(pt_model(**kwargs)).numpy()
 
-        # MLX forward — pass first positional tensor
-        first_input = next(iter(kwargs.values()))
-        x_mlx = mx.array(first_input.numpy())
-        out_mlx = mlx_model(x_mlx)
+        # MLX forward — pass all inputs as keyword arguments
+        mlx_kwargs = {k: mx.array(v.numpy()) for k, v in kwargs.items()}
+        out_mlx = mlx_model(**mlx_kwargs)
         y_mlx = np.array(_extract_output(out_mlx))
 
         assert y_torch.shape == y_mlx.shape, (

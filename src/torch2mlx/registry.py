@@ -149,7 +149,7 @@ def _populate() -> None:
         LayerMapping("ModuleDict", "None", "identity", "Container, no MLX equivalent"),
         # HuggingFace architecture-specific (no learnable weights)
         LayerMapping("SwinDropPath", "None", "identity", "Stochastic depth — identity at eval"),
-        LayerMapping("Dinov2LayerScale", "None", "identity", "Learnable scalar multiply"),
+        # Dinov2LayerScale: emitted as helper class by codegen (has learned param)
         LayerMapping(
             "Qwen2RotaryEmbedding",
             "None",

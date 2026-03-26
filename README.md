@@ -87,7 +87,7 @@ src/torch2mlx/
 
 ## What's supported
 
-**72** layer types with registry mappings, **59** operator translations, **12** dtype mappings, **7** weight transposition rules.
+**69** layer types with registry mappings, **79** operator translations, **12** dtype mappings, **7** weight transposition rules.
 
 Includes Conv1d/2d, ConvTranspose1d/2d, BatchNorm, LayerNorm, RMSNorm, Embedding, MultiheadAttention, GroupNorm, InstanceNorm, pooling (MaxPool/AvgPool 1d/2d/3d, AdaptiveAvgPool2d), common activations (GELU, ReLU, SiLU, Tanh, Sigmoid, Softmax, etc.), and tensor ops (matmul, einsum, reshape, squeeze, reductions, etc.). These are **syntactically mapped** — see the validation section below for which architectures have full end-to-end numerical verification.
 
@@ -128,7 +128,7 @@ These prove the weight conversion pipeline (transposition + safetensors round-tr
 
 ### Code generation (partially validated)
 
-End-to-end codegen validation — generate code, load converted weights, compare forward-pass output — is verified on **6 HuggingFace models**:
+End-to-end codegen validation — generate code, load converted weights, compare forward-pass output — is verified on **10 HuggingFace models**:
 
 | Model | Checkpoint | Max diff |
 |---|---|---|
@@ -136,8 +136,12 @@ End-to-end codegen validation — generate code, load converted weights, compare
 | BERT | `bert-base-uncased` | < 5e-3 |
 | RoBERTa | `roberta-base` | < 4e-5 |
 | ELECTRA | `google/electra-small-discriminator` | < 3e-2 |
-| ViT | `google/vit-base-patch16-224` | loaded + instantiated |
-| XLNet | `xlnet-base-cased` | loaded + instantiated |
+| ViT | `google/vit-base-patch16-224` | < 5e-5 |
+| GPT-2 | `gpt2` | < 3e-4 |
+| CamemBERT | `camembert-base` | < 4e-5 |
+| Data2Vec-Text | `facebook/data2vec-text-base` | < 5e-5 |
+| MPNet | `microsoft/mpnet-base` | < 1e-3 |
+| DINOv2 | `facebook/dinov2-small` | < 5e-5 |
 
 The remaining 30 HF models have codegen structural coverage (init + AST-rewritten `__call__`) but their forward passes have **not** been numerically validated. Generated code for untested models may contain unmapped operations requiring manual fixes.
 
@@ -254,24 +258,24 @@ These are reference implementations, not auto-generated. Use them directly or as
 | **P2 — Polish** | Done | PyPI metadata, support-matrix, dtype registry, `torch.compile` interop |
 | **P3 — HuggingFace validation** | Done | 36/36 models at 100% analyzer coverage, weight round-trip (MLX→PyTorch) |
 | **P4 — Code generation** | Done | Recursive init (36/36 at 100%), 3-tier `__call__` cascade, HF compat layer |
-| **P5 — Forward-pass validation** | In progress | 4/36 HF models numerically validated end-to-end |
+| **P5 — Forward-pass validation** | In progress | 10/36 HF models numerically validated end-to-end |
 | **Training support** | Planned | Lightning-compatible MLX Trainer — [see roadmap](next-steps.md) |
 
 ### Current numbers
 
 | Metric | |
 |---|---|
-| Layer types | 72 |
-| Op mappings | 59 |
+| Layer types | 69 |
+| Op mappings | 79 |
 | Dtype mappings | 12 |
 | Transposition rules | 7 (+ reverse for round-trip) |
-| Constructor specs | 72 (codegen) |
+| Constructor specs | 69 (codegen) |
 | Templates | 5 (MLP, Transformer, ConvBlock, ConvStack, AdaptiveAvgPool2d) |
 | Tests | 545+ (non-HF) + 367 (HF codegen) |
 | HF analyzer coverage | 36/36 at 100% (layer-level) |
 | HF codegen init coverage | 36/36 at 100% (recursive) |
 | HF codegen `__call__` | 36/36 AST-rewritten at MECHANICAL confidence |
-| HF forward-pass validated | 4 models (BERT, RoBERTa, DistilBERT, ELECTRA) |
+| HF forward-pass validated | 10 models (BERT, RoBERTa, DistilBERT, ELECTRA, ViT, GPT-2, CamemBERT, Data2Vec, MPNet, DINOv2) |
 
 ## Roadmap
 

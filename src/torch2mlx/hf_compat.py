@@ -176,6 +176,23 @@ _HF_GLOBAL_STUBS: dict[str, str] = {
         "    attn_output = mx.transpose(attn_output, (0, 2, 1, 3))\n"
         "    return attn_output, attn_weights\n"
     ),
+    "_prepare_4d_causal_attention_mask": (
+        "def _prepare_4d_causal_attention_mask(attention_mask, input_shape, inputs_embeds, past_key_values_length, sliding_window=None):\n"
+        "    bsz, tgt_len = input_shape\n"
+        "    src_len = tgt_len + past_key_values_length\n"
+        "    # Causal mask: upper-triangle is -inf\n"
+        "    causal = mx.full((tgt_len, src_len), -1e9)\n"
+        "    mask_cond = mx.arange(src_len)\n"
+        "    causal = mx.where(mask_cond[None, :] <= mx.arange(tgt_len)[:, None] + past_key_values_length, 0.0, causal)\n"
+        "    causal = mx.reshape(causal, (1, 1, tgt_len, src_len))\n"
+        "    causal = mx.broadcast_to(causal, (bsz, 1, tgt_len, src_len))\n"
+        "    if attention_mask is not None:\n"
+        "        # Expand 2D mask (bsz, src_len) → (bsz, 1, 1, src_len), invert\n"
+        "        expanded = mx.reshape(attention_mask, (bsz, 1, 1, src_len))\n"
+        "        expanded = (1.0 - expanded) * -1e9\n"
+        "        causal = causal + expanded\n"
+        "    return causal\n"
+    ),
     "_prepare_4d_causal_attention_mask_for_sdpa": (
         "def _prepare_4d_causal_attention_mask_for_sdpa(*args, **kwargs):\n"
         "    raise NotImplementedError('SDPA mask prep not needed with eager attention')\n"
@@ -227,8 +244,31 @@ _HF_OUTPUT_CLASS = (
 )
 
 
+_HF_CACHE_STUB = (
+    "class Cache:\n"
+    "    def get_seq_length(self, layer_idx=0):\n"
+    "        return 0\n"
+    "    def get_max_cache_shape(self):\n"
+    "        return None\n"
+    "class DynamicCache(Cache):\n"
+    "    @classmethod\n"
+    "    def from_legacy_cache(cls, past=None):\n"
+    "        return cls()\n"
+    "class StaticCache(Cache):\n"
+    "    pass\n"
+    "class SlidingWindowCache(Cache):\n"
+    "    pass\n"
+)
+
+
 def _inject_hf_output_stubs(source: str) -> str:
-    """Stub HF output dataclasses (BaseModelOutput, etc.)."""
+    """Stub HF output dataclasses (BaseModelOutput, etc.) and Cache classes."""
+    # Cache stubs (needed by decoder models with KV caching)
+    if _re.search(r"\bCache\b", source) and "class Cache" not in source:
+        first_class = source.find("\nclass ")
+        if first_class >= 0:
+            source = source[: first_class + 1] + _HF_CACHE_STUB + "\n" + source[first_class + 1 :]
+
     output_names_raw = _re.findall(r"\b(\w*Output\w*)\(", source)
     if not output_names_raw:
         return source
@@ -283,6 +323,11 @@ def _inject_nchw_to_nhwc(source: str) -> str:
         "mx.swapaxes(mx.flatten(self.projection(pixel_values), 2), 1, 2)",
         "(lambda _p: mx.reshape(_p, (_p.shape[0], -1, _p.shape[-1])))(self.projection(pixel_values))",
     )
+
+    # Fix channel-dim indexing in child classes: after NCHW→NHWC, channel is
+    # at dim -1 (not dim 1).  Rewrite pixel_values.shape[1] → shape[-1].
+    source = source.replace("pixel_values.shape[1]", "pixel_values.shape[-1]")
+
     return source
 
 

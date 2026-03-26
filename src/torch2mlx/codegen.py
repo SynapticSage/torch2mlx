@@ -511,7 +511,7 @@ CONSTRUCTOR_SPECS: dict[str, ConstructorSpec | None] = {
     "SwinDropPath": None,
     "BeitDropPath": None,
     "SegformerDropPath": None,
-    "Dinov2LayerScale": None,
+    # Dinov2LayerScale: emitted as helper class (x * self.lambda1)
     "Wav2Vec2SamePadLayer": None,
     "HubertSamePadLayer": None,
     "BeitRelativePositionBias": None,
@@ -1156,6 +1156,47 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
             self.mapped_ops += 1
             return self._handle_split(tensor, list(node.args[1:]), node.keywords)
 
+        # torch.min(a, b) → mx.minimum(a, b); torch.max(a, b) → mx.maximum(a, b)
+        # (2-arg elementwise form vs 1-arg reduction)
+        if func_name in ("min", "max") and len(node.args) == 2 and not node.keywords:
+            self.mapped_ops += 1
+            mlx_fn = "mx.minimum" if func_name == "min" else "mx.maximum"
+            return _ast.Call(
+                func=_make_mx_attr(mlx_fn),
+                args=list(node.args),
+                keywords=[],
+            )
+
+        # torch.zeros/ones(a, b, c) → mx.zeros((a, b, c))  — varargs to shape tuple
+        if func_name in ("zeros", "ones", "empty") and len(node.args) > 1:
+            self.mapped_ops += 1
+            shape_tuple = _ast.Tuple(elts=list(node.args), ctx=_ast.Load())
+            mlx_fn = "mx.zeros" if func_name in ("zeros", "empty") else "mx.ones"
+            return _ast.Call(
+                func=_make_mx_attr(mlx_fn),
+                args=[shape_tuple],
+                keywords=self._rename_kwargs(node.keywords, {}),
+            )
+
+        # torch.full_like(input, fill_value) → mx.full(input.shape, fill_value, dtype=input.dtype)
+        if func_name == "full_like" and len(node.args) >= 2:
+            self.mapped_ops += 1
+            inp = node.args[0]
+            fill_val = node.args[1]
+            return _ast.Call(
+                func=_make_mx_attr("mx.full"),
+                args=[
+                    _ast.Attribute(value=inp, attr="shape", ctx=_ast.Load()),
+                    fill_val,
+                ],
+                keywords=[
+                    _ast.keyword(
+                        arg="dtype",
+                        value=_ast.Attribute(value=inp, attr="dtype", ctx=_ast.Load()),
+                    ),
+                ],
+            )
+
         reg_key = f"torch.{func_name}"
         mapping = OP_REGISTRY.get(reg_key)
         if mapping is None:
@@ -1321,23 +1362,42 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
         # x.permute(0, 2, 1, 3) → mx.transpose(x, (0, 2, 1, 3))
         # x.transpose(0, 1) → mx.swapaxes(x, 0, 1)  [2 args stays as-is]
         _varargs_methods = ("view", "reshape", "expand", "permute")
-        if method_name in _varargs_methods and len(node.args) > 1:
-            elts = list(node.args)
-            # expand(-1) means "keep existing dim" — replace with receiver.shape[i]
-            if method_name == "expand":
-                for i, elt in enumerate(elts):
-                    if self._is_neg_one(elt):
-                        elts[i] = _ast.Subscript(
-                            value=_ast.Attribute(value=receiver, attr="shape", ctx=_ast.Load()),
-                            slice=_ast.Constant(value=i),
-                            ctx=_ast.Load(),
-                        )
-            shape_tuple = _ast.Tuple(elts=elts, ctx=_ast.Load())
-            return _ast.Call(
-                func=_make_mx_attr(mapping.mlx_op),
-                args=[receiver, shape_tuple],
-                keywords=self._rename_kwargs(node.keywords, mapping.param_renames),
-            )
+        if method_name in _varargs_methods:
+            # Three calling conventions:
+            #   x.view(a, b, c)       → args=[a, b, c]
+            #   x.view((a, b, c))     → args=[Tuple(a,b,c)]
+            #   x.view(*shape)        → args=[Starred(shape)]
+            if len(node.args) > 1:
+                elts = list(node.args)
+            elif len(node.args) == 1 and isinstance(node.args[0], _ast.Tuple):
+                elts = list(node.args[0].elts)
+            elif len(node.args) == 1 and isinstance(node.args[0], _ast.Starred):
+                # x.view(*shape) → mx.reshape(x, shape) — pass the tuple directly
+                shape_arg = node.args[0].value
+                return _ast.Call(
+                    func=_make_mx_attr(mapping.mlx_op),
+                    args=[receiver, shape_arg],
+                    keywords=self._rename_kwargs(node.keywords, mapping.param_renames),
+                )
+            else:
+                elts = None  # fall through to default handling
+
+            if elts is not None:
+                # expand(-1) means "keep existing dim" — replace with receiver.shape[i]
+                if method_name == "expand":
+                    for i, elt in enumerate(elts):
+                        if self._is_neg_one(elt):
+                            elts[i] = _ast.Subscript(
+                                value=_ast.Attribute(value=receiver, attr="shape", ctx=_ast.Load()),
+                                slice=_ast.Constant(value=i),
+                                ctx=_ast.Load(),
+                            )
+                shape_tuple = _ast.Tuple(elts=elts, ctx=_ast.Load())
+                return _ast.Call(
+                    func=_make_mx_attr(mapping.mlx_op),
+                    args=[receiver, shape_tuple],
+                    keywords=self._rename_kwargs(node.keywords, mapping.param_renames),
+                )
 
         # Method → function: prepend receiver as first arg
         return _ast.Call(
@@ -1660,12 +1720,12 @@ def _get_extra_methods(module: Any, call_source: str | None) -> str:
     """Find and rewrite non-forward methods referenced in the call body.
 
     Catches both self.method() calls AND self.method references (callbacks).
+    Recurses: if a captured method itself references further self.xxx methods,
+    those are captured too (transitive discovery).
     """
     if call_source is None:
         return ""
 
-    # Match all self.X references — covers both calls and callback refs
-    all_refs = set(_re.findall(r"self\.(\w+)", call_source))
     child_names = {name for name, _ in module.named_children()}
     param_names = {name for name, _ in module.named_parameters(recurse=False)}
     buffer_names = {name for name, _ in module.named_buffers(recurse=False)}
@@ -1677,17 +1737,30 @@ def _get_extra_methods(module: Any, call_source: str | None) -> str:
         | {"__init__", "__call__", "forward", "config", "training"}
         | HF_METHOD_STUBS.keys()
     )
-    candidates = all_refs - exclude
+
+    # Worklist: discover methods transitively from call_source
+    discovered: list[str] = []  # ordered for deterministic output
+    seen: set[str] = set()
+    pending_sources = [call_source]
+
+    while pending_sources:
+        src = pending_sources.pop()
+        refs = set(_re.findall(r"self\.(\w+)", src)) - exclude - seen
+        for method_name in sorted(refs):
+            seen.add(method_name)
+            method = getattr(type(module), method_name, None)
+            if method is None or not callable(method):
+                continue
+            rewritten = _rewrite_method_ast(method)
+            if rewritten is not None:
+                discovered.append(rewritten)
+                # Scan the rewritten method for further self.xxx references
+                pending_sources.append(rewritten)
 
     extra_source = ""
-    for method_name in sorted(candidates):
-        method = getattr(type(module), method_name, None)
-        if method is None or not callable(method):
-            continue
-        rewritten = _rewrite_method_ast(method)
-        if rewritten is not None:
-            indented = "\n".join(f"    {line}" for line in rewritten.split("\n"))
-            extra_source += f"\n{indented}\n"
+    for rewritten in discovered:
+        indented = "\n".join(f"    {line}" for line in rewritten.split("\n"))
+        extra_source += f"\n{indented}\n"
     return extra_source
 
 
@@ -1804,6 +1877,8 @@ def _walk_module(
                 init_lines.append(f"        self.{safe_name} = {child_type}()")
             else:
                 # 2c: Stateless skip (Identity, DropPath, RoPE, etc.)
+                # Emit as identity lambda so self.X(y) works in __call__
+                init_lines.append(f"        self.{safe_name} = lambda x, *a, **kw: x")
                 total += 1
                 skipped += 1
 
@@ -1830,8 +1905,30 @@ def _walk_module(
                         extra_methods=em,
                     )
                 init_lines.append(f"        self.{safe_name} = {child_type}()")
+            elif list(child.named_parameters(recurse=False)):
+                # 3b: No children but has parameters — emit helper class
+                # (e.g. Dinov2LayerScale: just self.lambda1 * x)
+                sub_lines, sub_total, sub_mapped, sub_skipped, sub_todos, sub_unmapped = (
+                    _walk_module(child, seen_classes)
+                )
+                total += sub_total
+                mapped += sub_mapped
+                skipped += sub_skipped
+                todos.extend(sub_todos)
+                unmapped.extend(sub_unmapped)
+                if child_type not in seen_classes:
+                    cb, cc, em = _try_ast_for_classdef(child)
+                    seen_classes[child_type] = _ClassDef(
+                        name=child_type,
+                        init_body="\n".join(sub_lines),
+                        forward_sig=_get_forward_signature(child),
+                        call_body=cb,
+                        call_confidence=cc,
+                        extra_methods=em,
+                    )
+                init_lines.append(f"        self.{safe_name} = {child_type}()")
             else:
-                # 3b: Truly unmapped leaf
+                # 3c: Truly unmapped leaf (no children, no parameters)
                 total += 1
                 unmapped.append(child_type)
                 todos.append(f"self.{safe_name}: {child_type} has no constructor spec")

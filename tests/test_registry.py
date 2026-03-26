@@ -67,7 +67,7 @@ EXPECTED_LAYERS = [
     ("AdaptiveAvgPool1d", "None", "identity"),
     ("ModuleDict", "None", "identity"),
     ("SwinDropPath", "None", "identity"),
-    ("Dinov2LayerScale", "None", "identity"),
+    # Dinov2LayerScale: now emitted as helper class (has learned param)
     ("Qwen2RotaryEmbedding", "None", "identity"),
     ("Wav2Vec2SamePadLayer", "None", "identity"),
     ("ParametrizedConv1d", "nn.Conv1d", "conv1d"),
@@ -120,6 +120,7 @@ EXPECTED_OPS = [
     ("torch.full", "mx.full", {}),
     ("torch.zeros_like", "mx.zeros_like", {}),
     ("torch.ones_like", "mx.ones_like", {}),
+    ("torch.full_like", "mx.full", {}),
     ("torch.tensor", "mx.array", {}),
     ("torch.finfo", "mx.finfo", {}),
     ("torch.iinfo", "mx.iinfo", {}),
@@ -133,6 +134,7 @@ EXPECTED_OPS = [
     ("torch.log", "mx.log", {}),
     ("torch.exp", "mx.exp", {}),
     ("torch.tanh", "mx.tanh", {}),
+    ("torch.cumsum", "mx.cumsum", {"dim": "axis"}),
     # Tensor methods (additional)
     ("x.expand", "mx.broadcast_to", {}),
     ("x.clamp", "mx.clip", {"min": "a_min", "max": "a_max"}),
