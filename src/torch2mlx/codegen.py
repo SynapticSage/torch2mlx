@@ -888,7 +888,7 @@ def _translate_graph(graph_module: Any) -> tuple[str, list[str]]:
 # ---------------------------------------------------------------------------
 
 # Methods that are no-ops in MLX (unified memory, no contiguity concept)
-_NOOP_METHODS = frozenset({"contiguous", "to", "cuda", "cpu", "detach", "requires_grad_"})
+_NOOP_METHODS = frozenset({"contiguous", "to", "type", "cuda", "cpu", "detach", "requires_grad_"})
 
 # Tensor cast methods → MLX dtype attribute names
 _CAST_DTYPES: dict[str, str] = {
@@ -1061,6 +1061,23 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
     def visit_Call(self, node: _ast.Call) -> _ast.expr:
         # Visit children first so nested transforms resolve
         self.generic_visit(node)
+
+        # isinstance(x, torch.Tensor) → isinstance(x, mx.array)
+        if (
+            isinstance(node.func, _ast.Name)
+            and node.func.id == "isinstance"
+            and len(node.args) == 2
+            and isinstance(node.args[1], _ast.Attribute)
+            and isinstance(node.args[1].value, _ast.Name)
+            and node.args[1].value.id == "torch"
+            and node.args[1].attr in ("Tensor", "FloatTensor", "LongTensor")
+        ):
+            node.args[1] = _ast.Attribute(
+                value=_ast.Name(id="mx", ctx=_ast.Load()),
+                attr="array",
+                ctx=_ast.Load(),
+            )
+            return node
 
         # Strip device=/pin_memory=/requires_grad= from ALL calls
         node.keywords = [kw for kw in node.keywords if kw.arg not in self._STRIP_KWARGS]
@@ -1469,7 +1486,7 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
         method = node.func.attr
         receiver = node.func.value
 
-        if method == "to":
+        if method in ("to", "type"):
             # Check if first positional arg or dtype= kwarg is a dtype constant
             dtype_node = None
             if node.args:
@@ -2335,6 +2352,7 @@ def _extract_config_refs(source: str) -> set[str]:
 _CONFIG_OVERRIDES: dict[str, str] = {
     "_attn_implementation": "'eager'",
     "attn_implementation": "'eager'",
+    "use_cache": "False",  # Disable KV caching (inference-only, no DynamicCache)
 }
 
 

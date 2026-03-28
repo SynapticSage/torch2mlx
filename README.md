@@ -128,7 +128,7 @@ These prove the weight conversion pipeline (transposition + safetensors round-tr
 
 ### Code generation (partially validated)
 
-End-to-end codegen validation — generate code, load converted weights, compare forward-pass output — is verified on **10 HuggingFace models**:
+End-to-end codegen validation — generate code, load converted weights, compare forward-pass output — is verified on **12 HuggingFace models**:
 
 | Model | Checkpoint | Max diff |
 |---|---|---|
@@ -142,6 +142,8 @@ End-to-end codegen validation — generate code, load converted weights, compare
 | Data2Vec-Text | `facebook/data2vec-text-base` | < 5e-5 |
 | MPNet | `microsoft/mpnet-base` | < 1e-3 |
 | DINOv2 | `facebook/dinov2-small` | < 5e-5 |
+| GPT-Neo | `EleutherAI/gpt-neo-125m` | < 1e-3 |
+| ALBERT | `albert-base-v2` | < 1e-3 |
 
 The remaining 30 HF models have codegen structural coverage (init + AST-rewritten `__call__`) but their forward passes have **not** been numerically validated. Generated code for untested models may contain unmapped operations requiring manual fixes.
 
@@ -258,7 +260,7 @@ These are reference implementations, not auto-generated. Use them directly or as
 | **P2 — Polish** | Done | PyPI metadata, support-matrix, dtype registry, `torch.compile` interop |
 | **P3 — HuggingFace validation** | Done | 36/36 models at 100% analyzer coverage, weight round-trip (MLX→PyTorch) |
 | **P4 — Code generation** | Done | Recursive init (36/36 at 100%), 3-tier `__call__` cascade, HF compat layer |
-| **P5 — Forward-pass validation** | In progress | 10/36 HF models numerically validated end-to-end |
+| **P5 — Forward-pass validation** | In progress | 12/36 HF models numerically validated end-to-end |
 | **Training support** | Planned | Lightning-compatible MLX Trainer — [see roadmap](next-steps.md) |
 
 ### Current numbers
@@ -275,7 +277,7 @@ These are reference implementations, not auto-generated. Use them directly or as
 | HF analyzer coverage | 36/36 at 100% (layer-level) |
 | HF codegen init coverage | 36/36 at 100% (recursive) |
 | HF codegen `__call__` | 36/36 AST-rewritten at MECHANICAL confidence |
-| HF forward-pass validated | 10 models (BERT, RoBERTa, DistilBERT, ELECTRA, ViT, GPT-2, CamemBERT, Data2Vec, MPNet, DINOv2) |
+| HF forward-pass validated | 12 models (BERT, RoBERTa, DistilBERT, ELECTRA, ViT, GPT-2, CamemBERT, Data2Vec, MPNet, DINOv2, GPT-Neo, ALBERT) |
 
 ## Roadmap
 

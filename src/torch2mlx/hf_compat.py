@@ -93,6 +93,30 @@ HF_METHOD_STUBS: dict[str, str] = {
         "        extended = (1.0 - extended) * mx.array(-1e9)\n"
         "        return extended"
     ),
+    "_prepare_4d_causal_attention_mask_with_cache_position": (
+        "    @staticmethod\n"
+        "    def _prepare_4d_causal_attention_mask_with_cache_position(\n"
+        "        attention_mask, sequence_length, target_length, dtype, cache_position=None,\n"
+        "        batch_size=1, **kwargs,\n"
+        "    ):\n"
+        "        if attention_mask is not None and len(attention_mask.shape) == 4:\n"
+        "            return attention_mask\n"
+        "        min_dtype = mx.finfo(dtype).min\n"
+        "        causal_mask = mx.full((sequence_length, target_length), min_dtype, dtype=dtype)\n"
+        "        if sequence_length != 1:\n"
+        "            causal_mask = mx.triu(causal_mask, k=1)\n"
+        "        if cache_position is not None:\n"
+        "            causal_mask = causal_mask * (mx.arange(target_length) > mx.reshape(cache_position, (-1, 1)))\n"
+        "        causal_mask = mx.broadcast_to(causal_mask[None, None, :, :], (batch_size, 1, sequence_length, target_length))\n"
+        "        if attention_mask is not None:\n"
+        "            mask_length = attention_mask.shape[-1]\n"
+        "            padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :]\n"
+        "            causal_mask = mx.concatenate([\n"
+        "                mx.where(padding_mask == 0, min_dtype, causal_mask[:, :, :, :mask_length]),\n"
+        "                causal_mask[:, :, :, mask_length:],\n"
+        "            ], axis=-1)\n"
+        "        return causal_mask"
+    ),
 }
 
 _HF_METHOD_CALL_RE = _re.compile(r"self\.(\w+)\(")
@@ -124,7 +148,8 @@ def _inject_hf_method_stubs(source: str) -> str:
                     if lines[k].strip().startswith("class ") and "(nn.Module):" in lines[k]:
                         next_class = k
                         break
-                class_body = "\n".join(lines[i:next_class])
+                # Scan entire class body (including extra methods before __call__)
+                class_body = "\n".join(lines[class_start:next_class])
                 class_methods = set(_HF_METHOD_CALL_RE.findall(class_body))
                 class_needed = class_methods & needed
 
@@ -291,6 +316,33 @@ def _inject_hf_output_stubs(source: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _fix_sdpa_kwargs(source: str) -> str:
+    """Fix mx.fast.scaled_dot_product_attention keyword args → positional.
+
+    HF SDPA attention emits: mx.fast.scaled_dot_product_attention(query=Q, key=K, value=V, mask=M)
+    MLX expects positional: mx.fast.scaled_dot_product_attention(Q, K, V, scale=s, mask=M)
+    """
+    pat = _re.compile(
+        r"mx\.fast\.scaled_dot_product_attention\("
+        r"query=(\w+),\s*key=(\w+),\s*value=(\w+)"
+        r"(?:,\s*attn_mask=(\w+))?"
+        r"(?:,\s*mask=(\w+))?"
+        r"[^)]*\)"
+    )
+
+    def _repl(m: _re.Match) -> str:
+        q, k, v = m.group(1), m.group(2), m.group(3)
+        mask = m.group(4) or m.group(5)
+        scale = f"1.0 / ({q}.shape[-1] ** 0.5)"
+        if mask:
+            return (
+                f"mx.fast.scaled_dot_product_attention({q}, {k}, {v}, scale={scale}, mask={mask})"
+            )
+        return f"mx.fast.scaled_dot_product_attention({q}, {k}, {v}, scale={scale})"
+
+    return pat.sub(_repl, source)
+
+
 def _inject_nchw_to_nhwc(source: str) -> str:
     """Inject NCHW→NHWC transpose for vision models.
 
@@ -360,4 +412,5 @@ def hf_post_process(source: str, model: Any) -> str:
     source = _inject_hf_output_stubs(source)
     source = _inject_logger_stub(source)
     source = _inject_nchw_to_nhwc(source)
+    source = _fix_sdpa_kwargs(source)
     return source

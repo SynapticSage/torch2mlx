@@ -434,9 +434,12 @@ _HF_FORWARD_MODELS = [
     ("Data2VecTextModel", "facebook/data2vec-text-base", "text"),
     ("MPNetModel", "microsoft/mpnet-base", "text"),
     ("Dinov2Model", "facebook/dinov2-small", "vision"),
-    # Phase 3: decoder models — deferred pending disk space / larger infra changes
-    #   OPT: needs OPTLearnedPositionalEmbedding helper class + _update_causal_mask
-    #   GPT-Neo: needs Cache/DynamicCache stubs (added), large model (~250MB)
+    # Phase 3: decoder + encoder variants
+    ("GPTNeoModel", "EleutherAI/gpt-neo-125m", "text"),
+    ("AlbertModel", "albert-base-v2", "text"),
+    # Deferred: Funnel (weight mismatch), Pythia (RoPE), ConvNeXt/SegFormer (weight tree),
+    #   Longformer (torch.div rounding), XLNet (index_select/eye/one_hot),
+    #   OPT/BART (custom positional embeddings)
 ]
 
 
