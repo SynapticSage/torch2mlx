@@ -120,6 +120,7 @@ def _populate() -> None:
         OpMapping("torch.exp", "mx.exp", {}, ""),
         OpMapping("torch.tanh", "mx.tanh", {}, ""),
         OpMapping("torch.cumsum", "mx.cumsum", {"dim": "axis"}, ""),
+        OpMapping("torch.index_select", "mx.take", {"dim": "axis"}, ""),
         # Tensor methods (additional)
         OpMapping("x.expand", "mx.broadcast_to", {}, "method -> function"),
         OpMapping("x.clamp", "mx.clip", {"min": "a_min", "max": "a_max"}, "method -> function"),

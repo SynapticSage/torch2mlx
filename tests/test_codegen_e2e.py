@@ -437,9 +437,10 @@ _HF_FORWARD_MODELS = [
     # Phase 3: decoder + encoder variants
     ("GPTNeoModel", "EleutherAI/gpt-neo-125m", "text"),
     ("AlbertModel", "albert-base-v2", "text"),
-    # Deferred: Funnel (weight mismatch), Pythia (RoPE), ConvNeXt/SegFormer (weight tree),
-    #   Longformer (torch.div rounding), XLNet (index_select/eye/one_hot),
-    #   OPT/BART (custom positional embeddings)
+    ("OPTModel", "facebook/opt-125m", "text"),
+    # BART — deferred: present_key_value None+None when use_cache=False in decoder layer
+    # Longformer — deferred: torch.div with rounding_mode, sliding window attention
+    ("XLNetModel", "xlnet-base-cased", "text"),
 ]
 
 

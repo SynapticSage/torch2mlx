@@ -128,7 +128,7 @@ These prove the weight conversion pipeline (transposition + safetensors round-tr
 
 ### Code generation (partially validated)
 
-End-to-end codegen validation — generate code, load converted weights, compare forward-pass output — is verified on **12 HuggingFace models**:
+End-to-end codegen validation — generate code, load converted weights, compare forward-pass output — is verified on **14 HuggingFace models**:
 
 | Model | Checkpoint | Max diff |
 |---|---|---|
@@ -144,6 +144,8 @@ End-to-end codegen validation — generate code, load converted weights, compare
 | DINOv2 | `facebook/dinov2-small` | < 5e-5 |
 | GPT-Neo | `EleutherAI/gpt-neo-125m` | < 1e-3 |
 | ALBERT | `albert-base-v2` | < 1e-3 |
+| OPT | `facebook/opt-125m` | < 1e-3 |
+| XLNet | `xlnet-base-cased` | < 1e-3 |
 
 The remaining 30 HF models have codegen structural coverage (init + AST-rewritten `__call__`) but their forward passes have **not** been numerically validated. Generated code for untested models may contain unmapped operations requiring manual fixes.
 
@@ -260,7 +262,7 @@ These are reference implementations, not auto-generated. Use them directly or as
 | **P2 — Polish** | Done | PyPI metadata, support-matrix, dtype registry, `torch.compile` interop |
 | **P3 — HuggingFace validation** | Done | 36/36 models at 100% analyzer coverage, weight round-trip (MLX→PyTorch) |
 | **P4 — Code generation** | Done | Recursive init (36/36 at 100%), 3-tier `__call__` cascade, HF compat layer |
-| **P5 — Forward-pass validation** | In progress | 12/36 HF models numerically validated end-to-end |
+| **P5 — Forward-pass validation** | In progress | 14/36 HF models numerically validated end-to-end |
 | **Training support** | Planned | Lightning-compatible MLX Trainer — [see roadmap](next-steps.md) |
 
 ### Current numbers
@@ -268,7 +270,7 @@ These are reference implementations, not auto-generated. Use them directly or as
 | Metric | |
 |---|---|
 | Layer types | 69 |
-| Op mappings | 79 |
+| Op mappings | 80 |
 | Dtype mappings | 12 |
 | Transposition rules | 7 (+ reverse for round-trip) |
 | Constructor specs | 69 (codegen) |
@@ -277,7 +279,7 @@ These are reference implementations, not auto-generated. Use them directly or as
 | HF analyzer coverage | 36/36 at 100% (layer-level) |
 | HF codegen init coverage | 36/36 at 100% (recursive) |
 | HF codegen `__call__` | 36/36 AST-rewritten at MECHANICAL confidence |
-| HF forward-pass validated | 12 models (BERT, RoBERTa, DistilBERT, ELECTRA, ViT, GPT-2, CamemBERT, Data2Vec, MPNet, DINOv2, GPT-Neo, ALBERT) |
+| HF forward-pass validated | 14 models |
 
 ## Roadmap
 

@@ -135,6 +135,7 @@ EXPECTED_OPS = [
     ("torch.exp", "mx.exp", {}),
     ("torch.tanh", "mx.tanh", {}),
     ("torch.cumsum", "mx.cumsum", {"dim": "axis"}),
+    ("torch.index_select", "mx.take", {"dim": "axis"}),
     # Tensor methods (additional)
     ("x.expand", "mx.broadcast_to", {}),
     ("x.clamp", "mx.clip", {"min": "a_min", "max": "a_max"}),

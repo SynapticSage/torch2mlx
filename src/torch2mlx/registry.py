@@ -132,13 +132,13 @@ def _populate() -> None:
             "OPTLearnedPositionalEmbedding",
             "nn.Embedding",
             "identity",
-            "HF OPT nn.Embedding subclass",
+            "HF OPT — helper class (custom forward with offset)",
         ),
         LayerMapping(
             "BartLearnedPositionalEmbedding",
             "nn.Embedding",
             "identity",
-            "HF BART nn.Embedding subclass",
+            "HF BART — helper class (custom forward with offset)",
         ),
         LayerMapping(
             "BartScaledWordEmbedding", "nn.Embedding", "identity", "HF BART scaled nn.Embedding"

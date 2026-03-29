@@ -497,8 +497,8 @@ CONSTRUCTOR_SPECS: dict[str, ConstructorSpec | None] = {
     "ConvNextLayerNorm": _LAYERNORM_SPEC,
     # HuggingFace — embeddings
     "WhisperPositionalEmbedding": _EMBEDDING_SPEC,
-    "OPTLearnedPositionalEmbedding": _EMBEDDING_SPEC,
-    "BartLearnedPositionalEmbedding": _EMBEDDING_SPEC,
+    "OPTLearnedPositionalEmbedding": _noarg("OPTLearnedPositionalEmbedding"),
+    "BartLearnedPositionalEmbedding": _noarg("BartLearnedPositionalEmbedding"),
     "BartScaledWordEmbedding": _EMBEDDING_SPEC,
     "PegasusSinusoidalPositionalEmbedding": _EMBEDDING_SPEC,
     # HuggingFace — linear subclasses
@@ -524,7 +524,36 @@ _SYNTHETIC_HELPERS: dict[str, _ClassDef] = {
         name="QuickGELU",
         init_body="",
         forward_sig="forward(self, x)",
-        call_body=("    def __call__(self, x):\n        return x * mx.sigmoid(1.702 * x)\n"),
+        call_body="    def __call__(self, x):\n        return x * mx.sigmoid(1.702 * x)\n",
+        call_confidence="mechanical",
+    ),
+    "OPTLearnedPositionalEmbedding": _ClassDef(
+        name="OPTLearnedPositionalEmbedding",
+        init_body="        self.offset = 2",
+        forward_sig="forward(self, attention_mask, past_key_values_length=0, position_ids=None)",
+        call_body=(
+            "def __call__(self, attention_mask, past_key_values_length=0, position_ids=None):\n"
+            "    if position_ids is None:\n"
+            "        position_ids = mx.cumsum(attention_mask, axis=1)\n"
+            "        position_ids = (position_ids * attention_mask - 1).astype(mx.int64)\n"
+            "        position_ids = position_ids[:, past_key_values_length:]\n"
+            "    return self.weight[position_ids + self.offset]"
+        ),
+        call_confidence="mechanical",
+    ),
+    "BartLearnedPositionalEmbedding": _ClassDef(
+        name="BartLearnedPositionalEmbedding",
+        init_body="        self.offset = 2",
+        forward_sig="forward(self, input_ids, past_key_values_length=0)",
+        call_body=(
+            "def __call__(self, input_ids, past_key_values_length=0):\n"
+            "    (bsz, seq_len) = input_ids.shape[:2]\n"
+            "    positions = mx.broadcast_to(\n"
+            "        mx.arange(past_key_values_length, past_key_values_length + seq_len)[None, :],\n"
+            "        (bsz, seq_len),\n"
+            "    )\n"
+            "    return self.weight[positions + self.offset]"
+        ),
         call_confidence="mechanical",
     ),
 }
@@ -1167,6 +1196,16 @@ class _TorchToMLXRewriter(_ast.NodeTransformer):
 
     def _rewrite_torch_func(self, node: _ast.Call, func_name: str) -> _ast.expr:
         self.total_ops += 1
+
+        # torch.index_select(input, dim, index) → mx.take(input, index, axis=dim)
+        if func_name == "index_select" and len(node.args) == 3:
+            self.mapped_ops += 1
+            return _ast.Call(
+                func=_make_mx_attr("mx.take"),
+                args=[node.args[0], node.args[2]],  # input, index
+                keywords=[_ast.keyword(arg="axis", value=node.args[1])],
+            )
+
         # torch.split(x, chunk_size, dim) — needs semantic translation
         if func_name == "split" and len(node.args) >= 2:
             tensor = node.args[0]
@@ -1848,7 +1887,20 @@ def _walk_module(
                 # Register synthetic helper class if needed (e.g. QuickGELU)
                 helper_name = spec.mlx_call
                 if helper_name in _SYNTHETIC_HELPERS and helper_name not in seen_classes:
-                    seen_classes[helper_name] = _SYNTHETIC_HELPERS[helper_name]
+                    helper = _SYNTHETIC_HELPERS[helper_name]
+                    # Merge orphan parameters from actual module into init_body
+                    extra_init = helper.init_body
+                    for pname, param in child.named_parameters(recurse=False):
+                        shape = tuple(param.shape)
+                        extra_init += f"\n        self.{_sanitize_name(pname)} = mx.zeros({_format_value(shape)})"
+                    seen_classes[helper_name] = _ClassDef(
+                        name=helper.name,
+                        init_body=extra_init,
+                        forward_sig=helper.forward_sig,
+                        call_body=helper.call_body,
+                        call_confidence=helper.call_confidence,
+                        extra_methods=helper.extra_methods,
+                    )
             except (AttributeError, TypeError) as exc:
                 todos.append(f"self.{safe_name}: {child_type} — {exc}")
                 init_lines.append(
